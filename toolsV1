@@ -1,0 +1,361 @@
+-- ==========================================
+-- TOOLS: AUTO FIRE & AUTO EYEMASS
+-- ==========================================
+
+local Config = {
+    AutoFireStart        = false,
+    AutoEyeStart         = false,
+    DefaultStateMinimize = false,         
+    ScanDelay            = 1,     -- Jeda scan antar iterasi (detik)
+    SafeDistanceMargin   = 1.5,   -- Jarak aman dari batas maksimal jangkauan (Studs)
+    ShowConsoleLogs      = true   -- Ubah ke false jika tidak ingin ada log di Console (F9)
+}
+
+-- Target spesifik untuk fitur EyeMass
+local EyeMassRooms = {
+    {"Rooms", "Medical", "Room1"},
+    {"Rooms", "Medical", "Room2"},
+    {"Rooms", "Medical", "Room3"},
+    {"Rooms", "Medical", "Room4"},
+    {"Rooms", "Medical", "Room5"},
+    {"Rooms", "Emergency", "Room6"},
+    {"Rooms", "Emergency", "Room7"},
+    {"Rooms", "Emergency", "Room8"}
+}
+
+-- ==========================================
+-- HELPER: DEBUG LOGS & PATHFINDER
+-- ==========================================
+local function debugLog(message, isWarning)
+    if Config.ShowConsoleLogs then
+        if isWarning then
+            warn(message)
+        else
+            print(message)
+        end
+    end
+end
+
+local function getRoomFromPath(pathTable)
+    local current = workspace
+    for _, name in ipairs(pathTable) do
+        if current then
+            current = current:FindFirstChild(name)
+        end
+    end
+    return current
+end
+
+-- ==========================================
+-- ANTI DUAL-EXECUTE & CLEANUP OLD PROCESS
+-- ==========================================
+if getgenv().AutoFireLoop then task.cancel(getgenv().AutoFireLoop); getgenv().AutoFireLoop = nil end
+if getgenv().AutoEyeLoop then task.cancel(getgenv().AutoEyeLoop); getgenv().AutoEyeLoop = nil end
+
+local CoreGui = game:GetService("CoreGui")
+if CoreGui:FindFirstChild("ToolsUI") then
+    CoreGui.ToolsUI:Destroy()
+end
+
+-- ==========================================
+-- SERVICES & VARIABLES
+-- ==========================================
+local Players           = game:GetService("Players")
+local UserInputService  = game:GetService("UserInputService")
+local LocalPlayer       = Players.LocalPlayer
+
+getgenv().AutoFireIsRunning = Config.AutoFireStart
+getgenv().AutoEyeIsRunning  = Config.AutoEyeStart
+local isMinimized = Config.DefaultStateMinimize
+
+-- ==========================================
+-- GUI SETUP
+-- ==========================================
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "ToolsUI"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.Parent = CoreGui
+
+local MainContainer = Instance.new("Frame")
+MainContainer.Size = UDim2.new(0, 220, 0, 115) -- Disesuaikan agar pas dan padat
+MainContainer.Position = UDim2.new(0, 20, 0.5, -50)
+MainContainer.BackgroundTransparency = 1
+MainContainer.Parent = ScreenGui
+
+local MainPanel = Instance.new("Frame")
+MainPanel.Size = UDim2.new(1, 0, 1, 0)
+MainPanel.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+MainPanel.Visible = not isMinimized
+MainPanel.Parent = MainContainer
+Instance.new("UICorner", MainPanel).CornerRadius = UDim.new(0, 8)
+
+local TopBar = Instance.new("Frame")
+TopBar.Size = UDim2.new(1, 0, 0, 30)
+TopBar.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+TopBar.Parent = MainPanel
+Instance.new("UICorner", TopBar).CornerRadius = UDim.new(0, 8)
+
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1, -60, 1, 0)
+Title.Position = UDim2.new(0, 10, 0, 0)
+Title.BackgroundTransparency = 1
+Title.Text = "tools"
+Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+Title.Font = Enum.Font.GothamBold
+Title.TextSize = 12
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.Parent = TopBar
+
+local HideBtn = Instance.new("TextButton")
+HideBtn.Size = UDim2.new(0, 30, 0, 30)
+HideBtn.Position = UDim2.new(1, -60, 0, 0)
+HideBtn.BackgroundTransparency = 1
+HideBtn.Text = "—"
+HideBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+HideBtn.Font = Enum.Font.GothamBold
+HideBtn.TextSize = 14
+HideBtn.Parent = TopBar
+
+local CloseBtn = Instance.new("TextButton")
+CloseBtn.Size = UDim2.new(0, 30, 0, 30)
+CloseBtn.Position = UDim2.new(1, -30, 0, 0)
+CloseBtn.BackgroundTransparency = 1
+CloseBtn.Text = "X"
+CloseBtn.TextColor3 = Color3.fromRGB(255, 80, 80)
+CloseBtn.Font = Enum.Font.GothamBold
+CloseBtn.TextSize = 14
+CloseBtn.Parent = TopBar
+
+local MiniBtn = Instance.new("TextButton")
+MiniBtn.Size = UDim2.new(0, 45, 0, 45)
+MiniBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+MiniBtn.Text = "+"
+MiniBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+MiniBtn.Font = Enum.Font.GothamBold
+MiniBtn.TextSize = 24
+MiniBtn.Visible = isMinimized
+MiniBtn.Parent = MainContainer
+Instance.new("UICorner", MiniBtn).CornerRadius = UDim.new(0, 8)
+
+-- LABEL STATUS
+local FireStatusLabel = Instance.new("TextLabel")
+FireStatusLabel.Size = UDim2.new(1, -20, 0, 15)
+FireStatusLabel.Position = UDim2.new(0, 10, 0, 40)
+FireStatusLabel.BackgroundTransparency = 1
+FireStatusLabel.Text = "Fire: Idle"
+FireStatusLabel.TextColor3 = Color3.fromRGB(80, 200, 80)
+FireStatusLabel.Font = Enum.Font.GothamBold
+FireStatusLabel.TextSize = 11
+FireStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+FireStatusLabel.Parent = MainPanel
+
+local EyeStatusLabel = Instance.new("TextLabel")
+EyeStatusLabel.Size = UDim2.new(1, -20, 0, 15)
+EyeStatusLabel.Position = UDim2.new(0, 10, 0, 55)
+EyeStatusLabel.BackgroundTransparency = 1
+EyeStatusLabel.Text = "EyeMass: Idle"
+EyeStatusLabel.TextColor3 = Color3.fromRGB(80, 200, 80)
+EyeStatusLabel.Font = Enum.Font.GothamBold
+EyeStatusLabel.TextSize = 11
+EyeStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+EyeStatusLabel.Parent = MainPanel
+
+-- TOGGLE BUTTONS (Kecil & Bersebelahan)
+local ToggleFireBtn = Instance.new("TextButton")
+ToggleFireBtn.Size = UDim2.new(0, 95, 0, 25)
+ToggleFireBtn.Position = UDim2.new(0, 10, 0, 78)
+ToggleFireBtn.BackgroundColor3 = getgenv().AutoFireIsRunning and Color3.fromRGB(80, 180, 80) or Color3.fromRGB(180, 80, 80)
+ToggleFireBtn.Text = getgenv().AutoFireIsRunning and "FIRE: ON" or "FIRE: OFF"
+ToggleFireBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+ToggleFireBtn.Font = Enum.Font.GothamBold
+ToggleFireBtn.TextSize = 11
+ToggleFireBtn.Parent = MainPanel
+Instance.new("UICorner", ToggleFireBtn).CornerRadius = UDim.new(0, 6)
+
+local ToggleEyeBtn = Instance.new("TextButton")
+ToggleEyeBtn.Size = UDim2.new(0, 95, 0, 25)
+ToggleEyeBtn.Position = UDim2.new(0, 115, 0, 78)
+ToggleEyeBtn.BackgroundColor3 = getgenv().AutoEyeIsRunning and Color3.fromRGB(80, 180, 80) or Color3.fromRGB(180, 80, 80)
+ToggleEyeBtn.Text = getgenv().AutoEyeIsRunning and "EYE: ON" or "EYE: OFF"
+ToggleEyeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+ToggleEyeBtn.Font = Enum.Font.GothamBold
+ToggleEyeBtn.TextSize = 11
+ToggleEyeBtn.Parent = MainPanel
+Instance.new("UICorner", ToggleEyeBtn).CornerRadius = UDim.new(0, 6)
+
+-- ==========================================
+-- UI INTERACTIONS
+-- ==========================================
+local function ToggleUI()
+    isMinimized = not isMinimized
+    MainPanel.Visible = not isMinimized
+    MiniBtn.Visible = isMinimized
+end
+HideBtn.MouseButton1Click:Connect(ToggleUI)
+MiniBtn.MouseButton1Click:Connect(ToggleUI)
+
+CloseBtn.MouseButton1Click:Connect(function()
+    debugLog("[Tools DEBUG] Menutup UI dan mematikan semua sistem.", true)
+    getgenv().AutoFireIsRunning = false
+    getgenv().AutoEyeIsRunning = false
+    if getgenv().AutoFireLoop then task.cancel(getgenv().AutoFireLoop); getgenv().AutoFireLoop = nil end
+    if getgenv().AutoEyeLoop then task.cancel(getgenv().AutoEyeLoop); getgenv().AutoEyeLoop = nil end
+    ScreenGui:Destroy()
+end)
+
+ToggleFireBtn.MouseButton1Click:Connect(function()
+    getgenv().AutoFireIsRunning = not getgenv().AutoFireIsRunning
+    ToggleFireBtn.BackgroundColor3 = getgenv().AutoFireIsRunning and Color3.fromRGB(80, 180, 80) or Color3.fromRGB(180, 80, 80)
+    ToggleFireBtn.Text = getgenv().AutoFireIsRunning and "FIRE: ON" or "FIRE: OFF"
+    
+    if not getgenv().AutoFireIsRunning then 
+        FireStatusLabel.Text = "Fire: PAUSED" 
+        FireStatusLabel.TextColor3 = Color3.fromRGB(200, 200, 80)
+    end
+end)
+
+ToggleEyeBtn.MouseButton1Click:Connect(function()
+    getgenv().AutoEyeIsRunning = not getgenv().AutoEyeIsRunning
+    ToggleEyeBtn.BackgroundColor3 = getgenv().AutoEyeIsRunning and Color3.fromRGB(80, 180, 80) or Color3.fromRGB(180, 80, 80)
+    ToggleEyeBtn.Text = getgenv().AutoEyeIsRunning and "EYE: ON" or "EYE: OFF"
+    
+    if not getgenv().AutoEyeIsRunning then 
+        EyeStatusLabel.Text = "EyeMass: PAUSED" 
+        EyeStatusLabel.TextColor3 = Color3.fromRGB(200, 200, 80)
+    end
+end)
+
+local function MakeDraggable(dragHandle)
+    local dragging, dragInput, dragStart, startPos
+    dragHandle.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true; dragStart = input.Position; startPos = MainContainer.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then dragging = false end
+            end)
+        end
+    end)
+    dragHandle.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            local delta = input.Position - dragStart
+            MainContainer.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end)
+end
+
+MakeDraggable(TopBar)
+MakeDraggable(MiniBtn)
+
+-- ==========================================
+-- CORE LOGIC 1: AUTO EXTINGUISH FIRE
+-- ==========================================
+getgenv().AutoFireLoop = task.spawn(function()
+    while true do
+        task.wait(Config.ScanDelay)
+        
+        if getgenv().AutoFireIsRunning then
+            local char = LocalPlayer.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            
+            if hrp then
+                local closestFire = nil
+                local shortestDist = math.huge
+                local promptFoundCount = 0
+                
+                for _, obj in ipairs(workspace:GetDescendants()) do
+                    if obj:IsA("ProximityPrompt") and obj.ActionText == "Put out fire" then
+                        promptFoundCount = promptFoundCount + 1
+                        local firePart = obj.Parent
+                        
+                        if firePart and firePart:IsA("BasePart") then
+                            local dist = (hrp.Position - firePart.Position).Magnitude
+                            if dist < shortestDist then
+                                shortestDist = dist
+                                closestFire = obj
+                            end
+                        end
+                    end
+                end
+                
+                if closestFire then
+                    FireStatusLabel.Text = "Fire: Memadamkan!"
+                    FireStatusLabel.TextColor3 = Color3.fromRGB(255, 85, 85)
+                    
+                    local firePart = closestFire.Parent
+                    local safeDistance = closestFire.MaxActivationDistance - Config.SafeDistanceMargin
+                    if safeDistance <= 0 then safeDistance = 3 end 
+                    
+                    if shortestDist > closestFire.MaxActivationDistance then
+                        local direction = (hrp.Position - firePart.Position).Unit
+                        local safePosition = firePart.Position + (direction * safeDistance)
+                        hrp.CFrame = CFrame.new(safePosition, firePart.Position) 
+                        task.wait(0.2) 
+                    end
+                    
+                    pcall(function()
+                        if fireproximityprompt then
+                            fireproximityprompt(closestFire, 1, 0)
+                        else
+                            local originalDuration = closestFire.HoldDuration
+                            closestFire.HoldDuration = 0
+                            closestFire:InputHoldBegan()
+                            task.wait()
+                            closestFire:InputHoldEnded()
+                            closestFire.HoldDuration = originalDuration
+                        end
+                    end)
+                    
+                    task.wait(0.5) 
+                else
+                    FireStatusLabel.Text = "Fire: Mencari..."
+                    FireStatusLabel.TextColor3 = Color3.fromRGB(80, 200, 80)
+                end
+            end
+        end
+    end
+end)
+
+-- ==========================================
+-- CORE LOGIC 2: AUTO DELETE EYEMASS
+-- ==========================================
+getgenv().AutoEyeLoop = task.spawn(function()
+    while true do
+        task.wait(Config.ScanDelay)
+        
+        if getgenv().AutoEyeIsRunning then
+            local foundAndDeleted = false
+            
+            for _, pathTable in ipairs(EyeMassRooms) do
+                local room = getRoomFromPath(pathTable)
+                
+                if room then
+                    -- Gunakan GetDescendants agar jika EyeMass berada di dalam folder/model di dalam room, tetap terdeteksi
+                    for _, obj in ipairs(room:GetDescendants()) do
+                        if obj.Name == "EyeMass" then
+                            pcall(function()
+                                obj:Destroy()
+                                debugLog("[AutoEye DEBUG] EyeMass ditemukan di " .. room.Name .. " dan berhasil dihapus!", false)
+                            end)
+                            foundAndDeleted = true
+                        end
+                    end
+                end
+            end
+            
+            if foundAndDeleted then
+                EyeStatusLabel.Text = "EyeMass: Dihapus!"
+                EyeStatusLabel.TextColor3 = Color3.fromRGB(85, 255, 255)
+                task.wait(0.5) -- Biarkan label bertahan sebentar
+            else
+                EyeStatusLabel.Text = "EyeMass: Scanning..."
+                EyeStatusLabel.TextColor3 = Color3.fromRGB(80, 200, 80)
+            end
+        end
+    end
+end)
