@@ -20,8 +20,8 @@ local Lib = require(RS:WaitForChild("Lib"))
 -- ============================================
 -- STATE (edit disini)
 -- ============================================
-local enabled = false   -- true = auto ON, false = auto OFF
-local minimized = true  -- true = auto minimize, false = expanded
+local enabled = true   -- true = auto ON, false = auto OFF
+local minimized = false  -- true = auto minimize, false = expanded
 local connections = {}
 
 -- ============================================
