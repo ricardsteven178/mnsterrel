@@ -1,0 +1,292 @@
+-- ============================================
+--   NO GAME END | by Axiom
+-- ============================================
+
+-- Kill yang lama, jalanin yang baru
+if _G.NGE_LOADED then
+    local oldGui = game:GetService("Players").LocalPlayer.PlayerGui:FindFirstChild("NGE_GUI")
+    if oldGui then oldGui:Destroy() end
+    _G.NGE_LOADED = nil
+    print("[NGE] Restarting...")
+end
+_G.NGE_LOADED = true
+
+local RS = game:GetService("ReplicatedStorage")
+local Lighting = game:GetService("Lighting")
+local CS = game:GetService("CollectionService")
+local LP = game:GetService("Players").LocalPlayer
+local Lib = require(RS:WaitForChild("Lib"))
+
+-- ============================================
+-- STATE (edit disini)
+-- ============================================
+local enabled = false   -- true = auto ON, false = auto OFF
+local minimized = true  -- true = auto minimize, false = expanded
+local connections = {}
+
+-- ============================================
+-- CORE LOGIC
+-- ============================================
+local oldPlayCutscene = Lib.Import("PlayCutscene")
+local oldControls = Lib.Import("PlayerControlsEnabled")
+local oldGameOver = Lib.Import("ShowGameOverScreen")
+
+local function enableBlock()
+    -- Strikes watcher
+    local strikesFrame = LP.PlayerGui:WaitForChild("Strikes"):WaitForChild("Frame")
+    strikesFrame.Visible = false
+    local strikeConn = strikesFrame:GetPropertyChangedSignal("Visible"):Connect(function()
+        if enabled and strikesFrame.Visible then
+            strikesFrame.Visible = false
+            print("[NGE] Strikes re-hidden")
+        end
+    end)
+    table.insert(connections, strikeConn)
+
+    Lib.Inject("PlayCutscene", function(cutsceneName, ...)
+        if not enabled then
+            return oldPlayCutscene and oldPlayCutscene(cutsceneName, ...) or nil
+        end
+        if cutsceneName == "ThreePatientsDiedEnding" then
+            print("[NGE] Blocked cutscene: ThreePatientsDiedEnding")
+            return
+        end
+        return oldPlayCutscene and oldPlayCutscene(cutsceneName, ...) or nil
+    end)
+
+    Lib.Inject("ShowGameOverScreen", function(...)
+        if not enabled then
+            return oldGameOver and oldGameOver(...) or nil
+        end
+        print("[NGE] Blocked GameOverScreen")
+    end)
+
+    Lib.Inject("PlayerControlsEnabled", function(val, ...)
+        if not enabled then
+            return oldControls and oldControls(val, ...) or nil
+        end
+        if val == false then
+            print("[NGE] Blocked PlayerControlsEnabled(false)")
+            return
+        end
+        return oldControls and oldControls(val, ...) or nil
+    end)
+
+    local tagConn = CS:GetInstanceAddedSignal("GameOver"):Connect(function(inst)
+        if not enabled then return end
+        print("[NGE] GameOver tag removed")
+        CS:RemoveTag(inst, "GameOver")
+        pcall(function() Lib.HideDeathScreen() end)
+        pcall(function() Lib.PlayerControlsEnabled(true) end)
+    end)
+    table.insert(connections, tagConn)
+
+    local Net = RS:WaitForChild("Util"):WaitForChild("Net")
+    for _, v in ipairs(Net:GetDescendants()) do
+        if v:IsA("RemoteEvent") then
+            if v.Name == "RE/TeleportToLobby" or v.Name == "RE/PlayCutscene" then
+                local c = v.OnClientEvent:Connect(function(arg1, ...)
+                    if not enabled then return end
+                    if v.Name == "RE/PlayCutscene" and arg1 == "ThreePatientsDiedEnding" then
+                        print("[NGE] Network blocked: ThreePatientsDiedEnding")
+                        return
+                    end
+                    if v.Name == "RE/TeleportToLobby" then
+                        print("[NGE] TeleportToLobby blocked")
+                        return
+                    end
+                end)
+                table.insert(connections, c)
+            end
+        end
+    end
+
+    local function guardBlur(blur)
+        local c = blur:GetPropertyChangedSignal("Size"):Connect(function()
+            if enabled and blur.Size > 0 then
+                blur.Size = 0
+                print("[NGE] Blur suppressed")
+            end
+        end)
+        table.insert(connections, c)
+    end
+
+    local existing = Lighting:FindFirstChildOfClass("BlurEffect")
+    if existing then guardBlur(existing) end
+
+    local addConn = Lighting.ChildAdded:Connect(function(child)
+        if child:IsA("BlurEffect") then guardBlur(child) end
+    end)
+    table.insert(connections, addConn)
+
+    local blur = Lighting:FindFirstChildOfClass("BlurEffect")
+    if blur then blur.Size = 0 end
+end
+
+local function disableBlock()
+    for _, c in ipairs(connections) do
+        pcall(function() c:Disconnect() end)
+    end
+    connections = {}
+
+    -- Restore Strikes
+    pcall(function()
+        LP.PlayerGui:WaitForChild("Strikes"):WaitForChild("Frame").Visible = true
+    end)
+
+    if oldPlayCutscene then Lib.Inject("PlayCutscene", oldPlayCutscene) end
+    if oldGameOver then Lib.Inject("ShowGameOverScreen", oldGameOver) end
+    if oldControls then Lib.Inject("PlayerControlsEnabled", oldControls) end
+    print("[NGE] Disabled")
+end
+
+-- ============================================
+-- GUI
+-- ============================================
+local PG = LP:WaitForChild("PlayerGui")
+
+local screen = Instance.new("ScreenGui")
+screen.Name = "NGE_GUI"
+screen.ResetOnSpawn = false
+screen.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screen.Parent = PG
+
+local frame = Instance.new("Frame")
+frame.Size = UDim2.new(0, 200, 0, 90)
+frame.Position = UDim2.new(0, 20, 0, 20)
+frame.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
+frame.BorderSizePixel = 0
+frame.Active = true
+frame.Draggable = true
+frame.Parent = screen
+
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
+
+local stroke = Instance.new("UIStroke")
+stroke.Color = Color3.fromRGB(60, 60, 80)
+stroke.Thickness = 1
+stroke.Parent = frame
+
+local titleBar = Instance.new("Frame")
+titleBar.Size = UDim2.new(1, 0, 0, 28)
+titleBar.BackgroundTransparency = 1
+titleBar.Parent = frame
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -60, 1, 0)
+title.Position = UDim2.new(0, 10, 0, 0)
+title.BackgroundTransparency = 1
+title.Text = "⚕ No Game End"
+title.TextColor3 = Color3.fromRGB(200, 200, 220)
+title.TextSize = 13
+title.Font = Enum.Font.GothamBold
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = titleBar
+
+local minBtn = Instance.new("TextButton")
+minBtn.Size = UDim2.new(0, 24, 0, 20)
+minBtn.Position = UDim2.new(1, -52, 0, 4)
+minBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
+minBtn.BorderSizePixel = 0
+minBtn.Text = "—"
+minBtn.TextColor3 = Color3.fromRGB(200, 200, 220)
+minBtn.TextSize = 11
+minBtn.Font = Enum.Font.GothamBold
+minBtn.Parent = titleBar
+Instance.new("UICorner", minBtn).CornerRadius = UDim.new(0, 4)
+
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0, 24, 0, 20)
+closeBtn.Position = UDim2.new(1, -26, 0, 4)
+closeBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
+closeBtn.BorderSizePixel = 0
+closeBtn.Text = "✕"
+closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+closeBtn.TextSize = 11
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.Parent = titleBar
+Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 4)
+
+local divider = Instance.new("Frame")
+divider.Size = UDim2.new(1, -20, 0, 1)
+divider.Position = UDim2.new(0, 10, 0, 30)
+divider.BackgroundColor3 = Color3.fromRGB(50, 50, 65)
+divider.BorderSizePixel = 0
+divider.Parent = frame
+
+local content = Instance.new("Frame")
+content.Size = UDim2.new(1, 0, 0, 56)
+content.Position = UDim2.new(0, 0, 0, 34)
+content.BackgroundTransparency = 1
+content.Parent = frame
+
+local btn = Instance.new("TextButton")
+btn.Size = UDim2.new(1, -20, 0, 28)
+btn.Position = UDim2.new(0, 10, 0, 10)
+btn.BackgroundColor3 = Color3.fromRGB(50, 50, 65)
+btn.BorderSizePixel = 0
+btn.Text = "OFF"
+btn.TextColor3 = Color3.fromRGB(150, 150, 170)
+btn.TextSize = 12
+btn.Font = Enum.Font.GothamBold
+btn.Parent = content
+Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+
+-- ============================================
+-- BUTTON LOGIC
+-- ============================================
+btn.MouseButton1Click:Connect(function()
+    enabled = not enabled
+    if enabled then
+        enableBlock()
+        btn.Text = "ON"
+        btn.BackgroundColor3 = Color3.fromRGB(40, 160, 80)
+        btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        stroke.Color = Color3.fromRGB(40, 160, 80)
+        print("[NGE] Enabled")
+    else
+        disableBlock()
+        btn.Text = "OFF"
+        btn.BackgroundColor3 = Color3.fromRGB(50, 50, 65)
+        btn.TextColor3 = Color3.fromRGB(150, 150, 170)
+        stroke.Color = Color3.fromRGB(60, 60, 80)
+    end
+end)
+
+minBtn.MouseButton1Click:Connect(function()
+    minimized = not minimized
+    content.Visible = not minimized
+    divider.Visible = not minimized
+    frame.Size = minimized and UDim2.new(0, 200, 0, 32) or UDim2.new(0, 200, 0, 90)
+    minBtn.Text = minimized and "▲" or "—"
+end)
+
+closeBtn.MouseButton1Click:Connect(function()
+    if enabled then disableBlock() end
+    _G.NGE_LOADED = nil
+    screen:Destroy()
+    print("[NGE] Closed boss man.")
+end)
+
+-- ============================================
+-- SYNC INITIAL STATE
+-- ============================================
+content.Visible = not minimized
+divider.Visible = not minimized
+frame.Size = minimized and UDim2.new(0, 200, 0, 32) or UDim2.new(0, 200, 0, 90)
+minBtn.Text = minimized and "▲" or "—"
+
+if enabled then
+    enableBlock()
+    btn.Text = "ON"
+    btn.BackgroundColor3 = Color3.fromRGB(40, 160, 80)
+    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    stroke.Color = Color3.fromRGB(40, 160, 80)
+else
+    btn.Text = "OFF"
+    btn.BackgroundColor3 = Color3.fromRGB(50, 50, 65)
+    btn.TextColor3 = Color3.fromRGB(150, 150, 170)
+    stroke.Color = Color3.fromRGB(60, 60, 80)
+end
+
+print("[NGE] GUI ready boss man.")
