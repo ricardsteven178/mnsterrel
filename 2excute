@@ -53,23 +53,23 @@ local LOBBY_PLACE_ID = 78515283254292
 -- Membuat tabel yang memetakan Place ID ke list script masing-masing
 local scriptsByPlaceId = {
     [INGAME_PLACE_ID] = {
-        --"https://cdn.jsdelivr.net/gh/ricardsteven178/mnster@main/room6v6",
-        --"https://cdn.jsdelivr.net/gh/ricardsteven178/mnster@main/room7v7",
-        "https://cdn.jsdelivr.net/gh/ricardsteven178/mnster@main/room6bypasV1",
-        "https://cdn.jsdelivr.net/gh/ricardsteven178/mnster@main/room7bypasV1",
-        "https://cdn.jsdelivr.net/gh/ricardsteven178/mnster@main/room8v5",
-        "https://cdn.jsdelivr.net/gh/ricardsteven178/mnster@main/ADokterbypassV1",
-        --"https://cdn.jsdelivr.net/gh/ricardsteven178/mnster@main/dokterV14",
-        --"https://cdn.jsdelivr.net/gh/ricardsteven178/mnster@main/toolsV1",
-        --"https://cdn.jsdelivr.net/gh/ricardsteven178/mnster@main/espallv3",
-        "https://cdn.jsdelivr.net/gh/ricardsteven178/mnster@main/0"--print
+        --"https://cdn.jsdelivr.net/gh/ricardsteven178/mnsterrel@main/room6v6",
+        --"https://cdn.jsdelivr.net/gh/ricardsteven178/mnsterrel@main/room7v7",
+        "https://cdn.jsdelivr.net/gh/ricardsteven178/mnsterrel@main/room6bypasV1",
+        "https://cdn.jsdelivr.net/gh/ricardsteven178/mnsterrel@main/room7bypasV1",
+        "https://cdn.jsdelivr.net/gh/ricardsteven178/mnsterrel@main/room8v5",
+        "https://cdn.jsdelivr.net/gh/ricardsteven178/mnsterrel@main/ADokterbypassV1",
+        --"https://cdn.jsdelivr.net/gh/ricardsteven178/mnsterrel@main/dokterV14",
+        --"https://cdn.jsdelivr.net/gh/ricardsteven178/mnsterrel@main/toolsV1",
+        --"https://cdn.jsdelivr.net/gh/ricardsteven178/mnsterrel@main/espallv3",
+        "https://cdn.jsdelivr.net/gh/ricardsteven178/mnsterrel@main/0"--print
     },
     [LOBBY_PLACE_ID] = {
-        --"https://cdn.jsdelivr.net/gh/ricardsteven178/mnster@main/low5",--grapik low
-        --"https://cdn.jsdelivr.net/gh/ricardsteven178/mnster@main/AutoGanti11",--GANTI GANTI
-        --"https://cdn.jsdelivr.net/gh/ricardsteven178/mnster@main/PlayerLobbyCheck",--kick localplayer bengong di lobby
-        --"https://cdn.jsdelivr.net/gh/ricardsteven178/mnster@main/AntiDC",--Anti DC
-        "https://cdn.jsdelivr.net/gh/ricardsteven178/mnster@main/0"--print
+        --"https://cdn.jsdelivr.net/gh/ricardsteven178/mnsterrel@main/low5",--grapik low
+        --"https://cdn.jsdelivr.net/gh/ricardsteven178/mnsterrel@main/AutoGanti11",--GANTI GANTI
+        --"https://cdn.jsdelivr.net/gh/ricardsteven178/mnsterrel@main/PlayerLobbyCheck",--kick localplayer bengong di lobby
+        --"https://cdn.jsdelivr.net/gh/ricardsteven178/mnsterrel@main/AntiDC",--Anti DC
+        "https://cdn.jsdelivr.net/gh/ricardsteven178/mnsterrel@main/0"--print
     }
 }
 
