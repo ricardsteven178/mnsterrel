@@ -1,0 +1,53 @@
+-- Ultimate Lightweight Anti-AFK
+-- Didesain headless (tanpa UI) untuk efisiensi memori dan CPU maksimal.
+
+local Players = game:GetService("Players")
+local StarterGui = game:GetService("StarterGui")
+local LocalPlayer = Players.LocalPlayer
+
+-- Notifikasi ringan saat dieksekusi
+local function notify(title, text)
+    pcall(function()
+        StarterGui:SetCore("SendNotification", {
+            Title = title,
+            Text = text,
+            Duration = 5,
+            Icon = "rbxassetid://475456048"
+        })
+    end)
+end
+
+-- Metode 1: Memotong koneksi Idled (Sangat efisien & mulus)
+-- Tidak mensimulasikan klik, murni memblokir sinyal AFK ke server.
+local function setupAdvancedAntiAfk()
+    local success, _ = pcall(function()
+        for _, connection in pairs(getconnections(LocalPlayer.Idled)) do
+            connection:Disable()
+        end
+    end)
+    return success
+end
+
+-- Metode 2: Fallback ke VirtualUser (Seperti referensi, jika executor tidak support getconnections)
+local function setupFallbackAntiAfk()
+    local VirtualUser = game:GetService("VirtualUser")
+    LocalPlayer.Idled:Connect(function()
+        VirtualUser:CaptureController()
+        VirtualUser:ClickButton2(Vector2.new())
+        print("[Anti-AFK] Mencegah kick dari server (Fallback Method).")
+    end)
+end
+
+-- Eksekusi Utama
+if setupAdvancedAntiAfk() then
+    print("[Anti-AFK] Berhasil diaktifkan menggunakan metode getconnections.")
+    notify("Anti-AFK Aktif", "Berjalan di background (Advanced Method).")
+else
+    setupFallbackAntiAfk()
+    print("[Anti-AFK] Berhasil diaktifkan menggunakan metode VirtualUser.")
+    notify("Anti-AFK Aktif", "Berjalan di background (Fallback Method).")
+end
+
+-- Hapus sampah memori jika skrip dijalankan ulang
+if getgenv().UltimateAntiAfkLoaded then return end
+getgenv().UltimateAntiAfkLoaded = true
