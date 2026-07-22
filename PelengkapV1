@@ -5,7 +5,7 @@
 local Config = {
     AutoFireStart        = true,
     AutoEyeStart         = true,
-    AutoSanityMax        = false,   -- Default state mati sekali nyala gabisa mati
+    AutoSanityMax        = true,   -- Default state mati sekali nyala gabisa mati
     DefaultStateMinimize = false,         
     ScanDelay            = 0.1,     -- Jeda scan antar iterasi (detik)
     SafeDistanceMargin   = 1.5,     -- Jarak aman dari batas maksimal jangkauan (Studs)
