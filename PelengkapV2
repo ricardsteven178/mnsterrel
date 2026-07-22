@@ -1,0 +1,545 @@
+-- ==========================================
+-- TOOLS: AUTO FIRE, AUTO EYEMASS, SANITY GOD & MOUSE UNLOCK
+-- ==========================================
+
+local Config = {
+    AutoFireStart        = true,
+    AutoEyeStart         = true,
+    AutoSanityMax        = true,
+    MouseUnlockStart     = true,       -- Default state mouse unlock
+    MouseUnlockKeybind   = "Y",        -- Keybind toggle mouse unlock
+    DefaultStateMinimize = false,
+    ScanDelay            = 0.1,
+    SafeDistanceMargin   = 1.5,
+    ShowConsoleLogs      = true
+}
+
+-- Target spesifik untuk fitur EyeMass
+local EyeMassRooms = {
+    {"Rooms", "Medical", "Room1"},
+    {"Rooms", "Medical", "Room2"},
+    {"Rooms", "Medical", "Room3"},
+    {"Rooms", "Medical", "Room4"},
+    {"Rooms", "Medical", "Room5"},
+    {"Rooms", "Emergency", "Room6"},
+    {"Rooms", "Emergency", "Room7"},
+    {"Rooms", "Emergency", "Room8"}
+}
+
+-- ==========================================
+-- HELPER: DEBUG LOGS & PATHFINDER
+-- ==========================================
+local function debugLog(message, isWarning)
+    if Config.ShowConsoleLogs then
+        if isWarning then
+            warn(message)
+        else
+            print(message)
+        end
+    end
+end
+
+local function getRoomFromPath(pathTable)
+    local current = workspace
+    for _, name in ipairs(pathTable) do
+        if current then
+            current = current:FindFirstChild(name)
+        end
+    end
+    return current
+end
+
+-- ==========================================
+-- ANTI DUAL-EXECUTE & CLEANUP OLD PROCESS
+-- ==========================================
+if getgenv().AutoFireLoop then task.cancel(getgenv().AutoFireLoop); getgenv().AutoFireLoop = nil end
+if getgenv().AutoEyeLoop then task.cancel(getgenv().AutoEyeLoop); getgenv().AutoEyeLoop = nil end
+if getgenv().AutoSanityLoop then task.cancel(getgenv().AutoSanityLoop); getgenv().AutoSanityLoop = nil end
+
+local CoreGui = game:GetService("CoreGui")
+if CoreGui:FindFirstChild("ToolsUI") then
+    CoreGui.ToolsUI:Destroy()
+end
+
+-- ==========================================
+-- SERVICES & VARIABLES
+-- ==========================================
+local Players           = game:GetService("Players")
+local RunService        = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService  = game:GetService("UserInputService")
+local LocalPlayer       = Players.LocalPlayer
+
+local NaN = 0/0
+local SanityEvent = ReplicatedStorage:WaitForChild("Util"):WaitForChild("Net"):WaitForChild("RE/PlayerLostSanity")
+
+getgenv().AutoFireIsRunning   = Config.AutoFireStart
+getgenv().AutoEyeIsRunning    = Config.AutoEyeStart
+getgenv().AutoSanityIsRunning = Config.AutoSanityMax
+
+local mouseUnlockEnabled = Config.MouseUnlockStart
+local mouseUnlockConn    = nil
+local updateMouseUnlockUI = nil
+local currentMouseKeybindCode = Enum.KeyCode[Config.MouseUnlockKeybind or "Y"] or Enum.KeyCode.Y
+
+local isMinimized = Config.DefaultStateMinimize
+
+-- ==========================================
+-- MOUSE UNLOCK LOGIC
+-- ==========================================
+local function applyMouseUnlock(state)
+    mouseUnlockEnabled = state
+    if state then
+        pcall(function() LocalPlayer.DevEnableMouseLock = false end)
+        if mouseUnlockConn then mouseUnlockConn:Disconnect() end
+        mouseUnlockConn = RunService.RenderStepped:Connect(function()
+            if not mouseUnlockEnabled then return end
+            pcall(function()
+                if LocalPlayer.CameraMode == Enum.CameraMode.LockFirstPerson then
+                    LocalPlayer.CameraMode = Enum.CameraMode.Classic
+                end
+                LocalPlayer.CameraMaxZoomDistance = 400
+                if LocalPlayer.CameraMinZoomDistance > 0.5 then
+                    LocalPlayer.CameraMinZoomDistance = 0.5
+                end
+            end)
+            if UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then
+                if UserInputService.MouseBehavior ~= Enum.MouseBehavior.LockCurrentPosition then
+                    UserInputService.MouseBehavior = Enum.MouseBehavior.LockCurrentPosition
+                end
+            else
+                if UserInputService.MouseBehavior ~= Enum.MouseBehavior.Default then
+                    UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+                end
+            end
+            if not UserInputService.MouseIconEnabled then
+                UserInputService.MouseIconEnabled = true
+            end
+            pcall(function()
+                local mouse = LocalPlayer:GetMouse()
+                if mouse and mouse.Icon ~= "" then mouse.Icon = "" end
+            end)
+            pcall(function()
+                if LocalPlayer.DevEnableMouseLock then
+                    LocalPlayer.DevEnableMouseLock = false
+                end
+            end)
+        end)
+    else
+        if mouseUnlockConn then mouseUnlockConn:Disconnect(); mouseUnlockConn = nil end
+    end
+end
+
+-- Keybind global Y
+UserInputService.InputBegan:Connect(function(input, processed)
+    if processed then return end
+    if input.KeyCode == currentMouseKeybindCode then
+        mouseUnlockEnabled = not mouseUnlockEnabled
+        applyMouseUnlock(mouseUnlockEnabled)
+        if updateMouseUnlockUI then updateMouseUnlockUI(mouseUnlockEnabled) end
+    end
+end)
+
+-- ==========================================
+-- GUI SETUP
+-- ==========================================
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "ToolsUI"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.Parent = CoreGui
+
+local MainContainer = Instance.new("Frame")
+MainContainer.Size = UDim2.new(0, 220, 0, 205)
+MainContainer.Position = UDim2.new(0, 20, 0.5, -100)
+MainContainer.BackgroundTransparency = 1
+MainContainer.Parent = ScreenGui
+
+local MainPanel = Instance.new("Frame")
+MainPanel.Size = UDim2.new(1, 0, 1, 0)
+MainPanel.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+MainPanel.Visible = not isMinimized
+MainPanel.Parent = MainContainer
+Instance.new("UICorner", MainPanel).CornerRadius = UDim.new(0, 8)
+
+local TopBar = Instance.new("Frame")
+TopBar.Size = UDim2.new(1, 0, 0, 30)
+TopBar.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+TopBar.Parent = MainPanel
+Instance.new("UICorner", TopBar).CornerRadius = UDim.new(0, 8)
+
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1, -60, 1, 0)
+Title.Position = UDim2.new(0, 10, 0, 0)
+Title.BackgroundTransparency = 1
+Title.Text = "tools"
+Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+Title.Font = Enum.Font.GothamBold
+Title.TextSize = 12
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.Parent = TopBar
+
+local HideBtn = Instance.new("TextButton")
+HideBtn.Size = UDim2.new(0, 30, 0, 30)
+HideBtn.Position = UDim2.new(1, -60, 0, 0)
+HideBtn.BackgroundTransparency = 1
+HideBtn.Text = "—"
+HideBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+HideBtn.Font = Enum.Font.GothamBold
+HideBtn.TextSize = 14
+HideBtn.Parent = TopBar
+
+local CloseBtn = Instance.new("TextButton")
+CloseBtn.Size = UDim2.new(0, 30, 0, 30)
+CloseBtn.Position = UDim2.new(1, -30, 0, 0)
+CloseBtn.BackgroundTransparency = 1
+CloseBtn.Text = "X"
+CloseBtn.TextColor3 = Color3.fromRGB(255, 80, 80)
+CloseBtn.Font = Enum.Font.GothamBold
+CloseBtn.TextSize = 14
+CloseBtn.Parent = TopBar
+
+local MiniBtn = Instance.new("TextButton")
+MiniBtn.Size = UDim2.new(0, 45, 0, 45)
+MiniBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+MiniBtn.Text = "+"
+MiniBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+MiniBtn.Font = Enum.Font.GothamBold
+MiniBtn.TextSize = 24
+MiniBtn.Visible = isMinimized
+MiniBtn.Parent = MainContainer
+Instance.new("UICorner", MiniBtn).CornerRadius = UDim.new(0, 8)
+
+-- STATUS LABELS
+local FireStatusLabel = Instance.new("TextLabel")
+FireStatusLabel.Size = UDim2.new(1, -20, 0, 15)
+FireStatusLabel.Position = UDim2.new(0, 10, 0, 35)
+FireStatusLabel.BackgroundTransparency = 1
+FireStatusLabel.Text = "Fire: Idle"
+FireStatusLabel.TextColor3 = Color3.fromRGB(80, 200, 80)
+FireStatusLabel.Font = Enum.Font.GothamBold
+FireStatusLabel.TextSize = 11
+FireStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+FireStatusLabel.Parent = MainPanel
+
+local EyeStatusLabel = Instance.new("TextLabel")
+EyeStatusLabel.Size = UDim2.new(1, -20, 0, 15)
+EyeStatusLabel.Position = UDim2.new(0, 10, 0, 50)
+EyeStatusLabel.BackgroundTransparency = 1
+EyeStatusLabel.Text = "EyeMass: Idle"
+EyeStatusLabel.TextColor3 = Color3.fromRGB(80, 200, 80)
+EyeStatusLabel.Font = Enum.Font.GothamBold
+EyeStatusLabel.TextSize = 11
+EyeStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+EyeStatusLabel.Parent = MainPanel
+
+local SanityStatusLabel = Instance.new("TextLabel")
+SanityStatusLabel.Size = UDim2.new(1, -20, 0, 15)
+SanityStatusLabel.Position = UDim2.new(0, 10, 0, 65)
+SanityStatusLabel.BackgroundTransparency = 1
+SanityStatusLabel.Text = getgenv().AutoSanityIsRunning and "Sanity: Max (God Mode)" or "Sanity: Normal"
+SanityStatusLabel.TextColor3 = getgenv().AutoSanityIsRunning and Color3.fromRGB(85, 255, 255) or Color3.fromRGB(200, 200, 80)
+SanityStatusLabel.Font = Enum.Font.GothamBold
+SanityStatusLabel.TextSize = 11
+SanityStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+SanityStatusLabel.Parent = MainPanel
+
+local MouseUnlockStatusLabel = Instance.new("TextLabel")
+MouseUnlockStatusLabel.Size = UDim2.new(1, -20, 0, 15)
+MouseUnlockStatusLabel.Position = UDim2.new(0, 10, 0, 80)
+MouseUnlockStatusLabel.BackgroundTransparency = 1
+MouseUnlockStatusLabel.Text = mouseUnlockEnabled and "Mouse Unlock: ON  [Y]" or "Mouse Unlock: OFF  [Y]"
+MouseUnlockStatusLabel.TextColor3 = mouseUnlockEnabled and Color3.fromRGB(85, 180, 255) or Color3.fromRGB(200, 200, 80)
+MouseUnlockStatusLabel.Font = Enum.Font.GothamBold
+MouseUnlockStatusLabel.TextSize = 11
+MouseUnlockStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+MouseUnlockStatusLabel.Parent = MainPanel
+
+-- TOGGLE BUTTONS
+local ToggleFireBtn = Instance.new("TextButton")
+ToggleFireBtn.Size = UDim2.new(0, 95, 0, 25)
+ToggleFireBtn.Position = UDim2.new(0, 10, 0, 100)
+ToggleFireBtn.BackgroundColor3 = getgenv().AutoFireIsRunning and Color3.fromRGB(80, 180, 80) or Color3.fromRGB(180, 80, 80)
+ToggleFireBtn.Text = getgenv().AutoFireIsRunning and "FIRE: ON" or "FIRE: OFF"
+ToggleFireBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+ToggleFireBtn.Font = Enum.Font.GothamBold
+ToggleFireBtn.TextSize = 11
+ToggleFireBtn.Parent = MainPanel
+Instance.new("UICorner", ToggleFireBtn).CornerRadius = UDim.new(0, 6)
+
+local ToggleEyeBtn = Instance.new("TextButton")
+ToggleEyeBtn.Size = UDim2.new(0, 95, 0, 25)
+ToggleEyeBtn.Position = UDim2.new(0, 115, 0, 100)
+ToggleEyeBtn.BackgroundColor3 = getgenv().AutoEyeIsRunning and Color3.fromRGB(80, 180, 80) or Color3.fromRGB(180, 80, 80)
+ToggleEyeBtn.Text = getgenv().AutoEyeIsRunning and "EYE: ON" or "EYE: OFF"
+ToggleEyeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+ToggleEyeBtn.Font = Enum.Font.GothamBold
+ToggleEyeBtn.TextSize = 11
+ToggleEyeBtn.Parent = MainPanel
+Instance.new("UICorner", ToggleEyeBtn).CornerRadius = UDim.new(0, 6)
+
+local ToggleSanityBtn = Instance.new("TextButton")
+ToggleSanityBtn.Size = UDim2.new(1, -20, 0, 25)
+ToggleSanityBtn.Position = UDim2.new(0, 10, 0, 130)
+ToggleSanityBtn.BackgroundColor3 = getgenv().AutoSanityIsRunning and Color3.fromRGB(30, 160, 80) or Color3.fromRGB(40, 40, 40)
+ToggleSanityBtn.Text = getgenv().AutoSanityIsRunning and "SANITY GOD: ON" or "SANITY GOD: OFF"
+ToggleSanityBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+ToggleSanityBtn.Font = Enum.Font.GothamBold
+ToggleSanityBtn.TextSize = 11
+ToggleSanityBtn.Parent = MainPanel
+Instance.new("UICorner", ToggleSanityBtn).CornerRadius = UDim.new(0, 6)
+
+local ToggleMouseUnlockBtn = Instance.new("TextButton")
+ToggleMouseUnlockBtn.Size = UDim2.new(1, -20, 0, 25)
+ToggleMouseUnlockBtn.Position = UDim2.new(0, 10, 0, 160)
+ToggleMouseUnlockBtn.BackgroundColor3 = mouseUnlockEnabled and Color3.fromRGB(30, 100, 180) or Color3.fromRGB(40, 40, 40)
+ToggleMouseUnlockBtn.Text = mouseUnlockEnabled and "MOUSE UNLOCK: ON" or "MOUSE UNLOCK: OFF"
+ToggleMouseUnlockBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+ToggleMouseUnlockBtn.Font = Enum.Font.GothamBold
+ToggleMouseUnlockBtn.TextSize = 11
+ToggleMouseUnlockBtn.Parent = MainPanel
+Instance.new("UICorner", ToggleMouseUnlockBtn).CornerRadius = UDim.new(0, 6)
+
+-- ==========================================
+-- UI INTERACTIONS & DRAG LOGIC
+-- ==========================================
+local function ToggleUI()
+    isMinimized = not isMinimized
+    MainPanel.Visible = not isMinimized
+    MiniBtn.Visible = isMinimized
+end
+HideBtn.MouseButton1Click:Connect(ToggleUI)
+MiniBtn.MouseButton1Click:Connect(ToggleUI)
+
+CloseBtn.MouseButton1Click:Connect(function()
+    debugLog("[Tools DEBUG] Menutup UI dan mematikan semua sistem.", true)
+    getgenv().AutoFireIsRunning = false
+    getgenv().AutoEyeIsRunning = false
+    getgenv().AutoSanityIsRunning = false
+    mouseUnlockEnabled = false
+    applyMouseUnlock(false)
+
+    if getgenv().AutoFireLoop then task.cancel(getgenv().AutoFireLoop); getgenv().AutoFireLoop = nil end
+    if getgenv().AutoEyeLoop then task.cancel(getgenv().AutoEyeLoop); getgenv().AutoEyeLoop = nil end
+    if getgenv().AutoSanityLoop then task.cancel(getgenv().AutoSanityLoop); getgenv().AutoSanityLoop = nil end
+
+    ScreenGui:Destroy()
+end)
+
+ToggleFireBtn.MouseButton1Click:Connect(function()
+    getgenv().AutoFireIsRunning = not getgenv().AutoFireIsRunning
+    ToggleFireBtn.BackgroundColor3 = getgenv().AutoFireIsRunning and Color3.fromRGB(80, 180, 80) or Color3.fromRGB(180, 80, 80)
+    ToggleFireBtn.Text = getgenv().AutoFireIsRunning and "FIRE: ON" or "FIRE: OFF"
+    if not getgenv().AutoFireIsRunning then
+        FireStatusLabel.Text = "Fire: PAUSED"
+        FireStatusLabel.TextColor3 = Color3.fromRGB(200, 200, 80)
+    end
+end)
+
+ToggleEyeBtn.MouseButton1Click:Connect(function()
+    getgenv().AutoEyeIsRunning = not getgenv().AutoEyeIsRunning
+    ToggleEyeBtn.BackgroundColor3 = getgenv().AutoEyeIsRunning and Color3.fromRGB(80, 180, 80) or Color3.fromRGB(180, 80, 80)
+    ToggleEyeBtn.Text = getgenv().AutoEyeIsRunning and "EYE: ON" or "EYE: OFF"
+    if not getgenv().AutoEyeIsRunning then
+        EyeStatusLabel.Text = "EyeMass: PAUSED"
+        EyeStatusLabel.TextColor3 = Color3.fromRGB(200, 200, 80)
+    end
+end)
+
+-- Sync UI function untuk mouse unlock
+updateMouseUnlockUI = function(state)
+    MouseUnlockStatusLabel.Text = state and "Mouse Unlock: ON  [Y]" or "Mouse Unlock: OFF  [Y]"
+    MouseUnlockStatusLabel.TextColor3 = state and Color3.fromRGB(85, 180, 255) or Color3.fromRGB(200, 200, 80)
+    ToggleMouseUnlockBtn.BackgroundColor3 = state and Color3.fromRGB(30, 100, 180) or Color3.fromRGB(40, 40, 40)
+    ToggleMouseUnlockBtn.Text = state and "MOUSE UNLOCK: ON" or "MOUSE UNLOCK: OFF"
+end
+
+ToggleMouseUnlockBtn.MouseButton1Click:Connect(function()
+    mouseUnlockEnabled = not mouseUnlockEnabled
+    applyMouseUnlock(mouseUnlockEnabled)
+    updateMouseUnlockUI(mouseUnlockEnabled)
+end)
+
+local function MakeDraggable(dragHandle)
+    local dragging, dragInput, dragStart, startPos
+    dragHandle.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true; dragStart = input.Position; startPos = MainContainer.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then dragging = false end
+            end)
+        end
+    end)
+    dragHandle.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            local delta = input.Position - dragStart
+            MainContainer.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end)
+end
+
+MakeDraggable(TopBar)
+MakeDraggable(MiniBtn)
+
+-- ==========================================
+-- CORE LOGIC 1: AUTO EXTINGUISH FIRE
+-- ==========================================
+getgenv().AutoFireLoop = task.spawn(function()
+    while true do
+        task.wait(Config.ScanDelay)
+
+        if getgenv().AutoFireIsRunning then
+            local char = LocalPlayer.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+
+            if hrp then
+                local closestFire = nil
+                local shortestDist = math.huge
+
+                for _, obj in ipairs(workspace:GetDescendants()) do
+                    if obj:IsA("ProximityPrompt") and obj.ActionText == "Put out fire" then
+                        local firePart = obj.Parent
+                        if firePart and firePart:IsA("BasePart") then
+                            local dist = (hrp.Position - firePart.Position).Magnitude
+                            if dist < shortestDist then
+                                shortestDist = dist
+                                closestFire = obj
+                            end
+                        end
+                    end
+                end
+
+                if closestFire then
+                    FireStatusLabel.Text = "Fire: Memadamkan!"
+                    FireStatusLabel.TextColor3 = Color3.fromRGB(255, 85, 85)
+
+                    local firePart = closestFire.Parent
+                    local safeDistance = closestFire.MaxActivationDistance - Config.SafeDistanceMargin
+                    if safeDistance <= 0 then safeDistance = 3 end
+
+                    if shortestDist > closestFire.MaxActivationDistance then
+                        local direction = (hrp.Position - firePart.Position).Unit
+                        local safePosition = firePart.Position + (direction * safeDistance)
+                        hrp.CFrame = CFrame.new(safePosition, firePart.Position)
+                        task.wait(0.05)
+                    end
+
+                    pcall(function()
+                        if fireproximityprompt then
+                            fireproximityprompt(closestFire, 1, 0)
+                        else
+                            local originalDuration = closestFire.HoldDuration
+                            closestFire.HoldDuration = 0
+                            closestFire:InputHoldBegan()
+                            task.wait()
+                            closestFire:InputHoldEnded()
+                            closestFire.HoldDuration = originalDuration
+                        end
+                    end)
+
+                    task.wait(0.05)
+                else
+                    FireStatusLabel.Text = "Fire: Mencari..."
+                    FireStatusLabel.TextColor3 = Color3.fromRGB(80, 200, 80)
+                end
+            end
+        end
+    end
+end)
+
+-- ==========================================
+-- CORE LOGIC 2: AUTO DELETE EYEMASS
+-- ==========================================
+getgenv().AutoEyeLoop = task.spawn(function()
+    while true do
+        task.wait(Config.ScanDelay)
+
+        if getgenv().AutoEyeIsRunning then
+            local foundAndDeleted = false
+
+            for _, pathTable in ipairs(EyeMassRooms) do
+                local room = getRoomFromPath(pathTable)
+                if room then
+                    for _, obj in ipairs(room:GetDescendants()) do
+                        if obj.Name == "EyeMass" then
+                            pcall(function()
+                                obj:Destroy()
+                                debugLog("[AutoEye DEBUG] EyeMass ditemukan di " .. room.Name .. " dan berhasil dihapus!", false)
+                            end)
+                            foundAndDeleted = true
+                        end
+                    end
+                end
+            end
+
+            if foundAndDeleted then
+                EyeStatusLabel.Text = "EyeMass: Dihapus!"
+                EyeStatusLabel.TextColor3 = Color3.fromRGB(85, 255, 255)
+                task.wait(0.5)
+            else
+                EyeStatusLabel.Text = "EyeMass: Scanning..."
+                EyeStatusLabel.TextColor3 = Color3.fromRGB(80, 200, 80)
+            end
+        end
+    end
+end)
+
+-- ==========================================
+-- CORE LOGIC 3: SANITY GOD MODE
+-- ==========================================
+local function godifySanity()
+    pcall(function()
+        SanityEvent:FireServer(NaN, "Heal your Sanity")
+        LocalPlayer:SetAttribute("Sanity", NaN)
+    end)
+end
+
+local function toggleSanityState()
+    if getgenv().AutoSanityIsRunning then
+        SanityStatusLabel.Text = "Sanity: Max (God Mode)"
+        SanityStatusLabel.TextColor3 = Color3.fromRGB(85, 255, 255)
+
+        godifySanity()
+
+        if getgenv().AutoSanityLoop then task.cancel(getgenv().AutoSanityLoop) end
+        getgenv().AutoSanityLoop = task.spawn(function()
+            while getgenv().AutoSanityIsRunning do
+                task.wait(30)
+                if getgenv().AutoSanityIsRunning then godifySanity() end
+            end
+        end)
+    else
+        SanityStatusLabel.Text = "Sanity: Normal"
+        SanityStatusLabel.TextColor3 = Color3.fromRGB(200, 200, 80)
+
+        if getgenv().AutoSanityLoop then
+            task.cancel(getgenv().AutoSanityLoop)
+            getgenv().AutoSanityLoop = nil
+        end
+        pcall(function() LocalPlayer:SetAttribute("Sanity", 100) end)
+        debugLog("God OFF. Server NaN persists until next shift/respawn.", false)
+    end
+end
+
+ToggleSanityBtn.MouseButton1Click:Connect(function()
+    getgenv().AutoSanityIsRunning = not getgenv().AutoSanityIsRunning
+    ToggleSanityBtn.BackgroundColor3 = getgenv().AutoSanityIsRunning and Color3.fromRGB(30, 160, 80) or Color3.fromRGB(40, 40, 40)
+    ToggleSanityBtn.Text = getgenv().AutoSanityIsRunning and "SANITY GOD: ON" or "SANITY GOD: OFF"
+    toggleSanityState()
+end)
+
+-- ==========================================
+-- AUTO START
+-- ==========================================
+if getgenv().AutoSanityIsRunning then
+    toggleSanityState()
+end
+
+if mouseUnlockEnabled then
+    applyMouseUnlock(true)
+end
