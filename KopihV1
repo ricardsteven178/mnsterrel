@@ -6,7 +6,7 @@
 -- ⚙️ AREA KONFIGURASI 
 -- ==========================================
 local Config = {
-	MaxKopiDiTas = 3,          
+	MaxKopiDiTas = 1,          
 	SimpanKopiBekas = 2,       
 	
 	BatasMinum = 95,           
