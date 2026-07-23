@@ -1,0 +1,583 @@
+-- ══════════════════════════════════════════════════════
+-- [AXIOM] AUTO BUY SHOP v3
+-- ══════════════════════════════════════════════════════
+
+-- ┌─────────────────────────────────────────────────┐
+-- │                   CONFIG                        │
+-- └─────────────────────────────────────────────────┘
+local CONFIG = {
+    mode          = "UPGRADE", -- "TOOL" | "UPGRADE" | "ALL" | "NONE"
+    budget        = 0,         -- max spend per item, 0 = unlimited
+    startEnabled  = false,     -- true = langsung aktif saat execute
+    startMinimized = false,    -- true = langsung minimize saat execute
+    buyDelay      = 0.3,       -- detik jeda antar pembelian
+    teleportWait  = 0.3,       -- detik tunggu setelah teleport sebelum fire
+    confirmTimeout = 3,        -- detik timeout konfirmasi cash berkurang
+}
+
+-- ┌─────────────────────────────────────────────────┐
+-- │              PRIORITY DATABASE                  │
+-- │  Urutan atas = prioritas lebih tinggi           │
+-- └─────────────────────────────────────────────────┘
+local ShopDatabase = {
+    TOOL = {
+        { name="Recover Sanity over a brief period" },
+        { name="Recover 60% Sanity" },
+        { name="Recover 15% Sanity" },
+        { name="Use to scan a patient for anomalies (1 use)" },
+        { name="Shock people (1 use)" },
+        { name="Shock people (3 uses)" },
+        { name="Speed Boost (30s)" },
+        { name="Shoot people (20 bullets)" },
+        { name="Deploy a security camera" },
+        { name="Use to revive 1 dead player (cant use on self)" },
+    },
+    UPGRADE = {
+        { name="Extra check in window" },
+        { name="+1 Carry Capacity" },
+        { name="Patients recover 25% faster" },
+        { name="Faster check in" },
+        { name="Visitors check in faster" },
+        { name="+10% NPC Speed" },
+        { name="+12% NPC Speed" },
+        { name="33% Faster computers" },
+        { name="25% Faster computers" },
+        { name="25% Faster Printers" },
+        { name="20% Faster Printers" },
+        { name="50% Faster DNA analysis" },
+        { name="25% Faster DNA analysis" },
+    },
+}
+
+-- ┌─────────────────────────────────────────────────┐
+-- │           SLOT POSITIONS (hardcoded)            │
+-- └─────────────────────────────────────────────────┘
+local SlotPositions = {
+    ["1"] = Vector3.new(-171.8, 3.5, -16.75),
+    ["2"] = Vector3.new(-171.8, 3.5, -13.64),
+    ["3"] = Vector3.new(-171.8, 3.5, -10.54),
+}
+
+-- ══════════════════════════════════════════════════════
+-- ANTI DOUBLE EXECUTE
+-- ══════════════════════════════════════════════════════
+if _G.AxiomAutoBuyActive then
+    _G.AxiomAutoBuyActive = false
+    task.wait(0.3)
+end
+_G.AxiomAutoBuyActive = true
+local myToken = _G.AxiomAutoBuyActive
+
+local RS = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local CollectionService = game:GetService("CollectionService")
+local Net = RS.Util.Net
+
+local lp = Players.LocalPlayer
+local isBuying = false
+local localCash = 0
+local buyLog = {}
+local boughtThisShop = {}
+
+local config = {
+    mode    = CONFIG.mode,
+    enabled = CONFIG.startEnabled,
+    budget  = CONFIG.budget,
+}
+
+-- ══════════════════════════════════════════════════════
+-- CASH READER
+-- ══════════════════════════════════════════════════════
+local function readCash()
+    local ok, val = pcall(function()
+        return lp.PlayerGui.Sanity.Frame.cash.Text
+    end)
+    if ok and val then
+        local num = val:gsub("%$",""):gsub(",",""):match("^%s*(.-)%s*$")
+        localCash = tonumber(num) or 0
+    end
+end
+
+local statsRE = Net:FindFirstChild("RE/Stats")
+if statsRE then
+    statsRE.OnClientEvent:Connect(function(_, tbl, key)
+        if key == "LocalCash" and type(tbl) == "table" then
+            localCash = tbl.LocalCash or localCash
+        end
+    end)
+end
+
+task.spawn(function()
+    while _G.AxiomAutoBuyActive == myToken do
+        readCash()
+        task.wait(1)
+    end
+end)
+
+-- ══════════════════════════════════════════════════════
+-- CORE LOGIC
+-- ══════════════════════════════════════════════════════
+local function getSlots()
+    local slots = {}
+    for _, pp in ipairs(CollectionService:GetTagged("ShopItemPP")) do
+        pcall(function()
+            if not pp.Enabled then return end
+            local model = pp.Parent
+            if not model or model:FindFirstChild("SoldOut") then return end
+            local entry = { pp=pp, name="?", type="?", cost=0 }
+            for _, label in ipairs(model:GetDescendants()) do
+                if label:IsA("TextLabel") and label.Text and #label.Text > 0 then
+                    local n = label.Name:lower()
+                    if n == "description" then entry.name = label.Text
+                    elseif n == "type" then
+                        entry.type = label.Text:gsub("[%[%]]",""):match("^%s*(.-)%s*$")
+                    elseif n == "cost" then
+                        entry.cost = tonumber(label.Text:gsub("[%$,]",""):match("^%s*(.-)%s*$")) or 0
+                    end
+                end
+            end
+            if entry.name ~= "?" then table.insert(slots, entry) end
+        end)
+    end
+    return slots
+end
+
+local function getPriority(name)
+    local list = config.mode == "TOOL" and ShopDatabase.TOOL
+        or config.mode == "UPGRADE" and ShopDatabase.UPGRADE
+        or (function()
+            local merged = {}
+            for _, v in ipairs(ShopDatabase.TOOL) do table.insert(merged, v) end
+            for _, v in ipairs(ShopDatabase.UPGRADE) do table.insert(merged, v) end
+            return merged
+        end)()
+    for i, item in ipairs(list) do
+        if item.name:lower() == name:lower() then return i end
+    end
+    return 999
+end
+
+local logCallback = nil -- diisi GUI nanti
+
+local function addLog(msg, success)
+    table.insert(buyLog, 1, { text=msg, success=success })
+    if #buyLog > 15 then table.remove(buyLog) end
+    if logCallback then logCallback() end
+end
+
+function tryBuy()
+    if not _G.AxiomAutoBuyActive == myToken then return end
+    if not config.enabled or isBuying then return end
+    if config.mode == "NONE" then return end
+    isBuying = true
+
+    readCash()
+    local slots = getSlots()
+    local candidates = {}
+
+    for _, slot in ipairs(slots) do
+        if boughtThisShop[slot.name] then continue end
+        local typeMatch = config.mode == "ALL"
+            or (config.mode == slot.type)
+        local budgetOk = config.budget == 0 or slot.cost <= config.budget
+        local cashOk = slot.cost <= localCash
+        if typeMatch and budgetOk and cashOk then
+            slot.priority = getPriority(slot.name)
+            table.insert(candidates, slot)
+        end
+    end
+
+    table.sort(candidates, function(a,b) return a.priority < b.priority end)
+
+    if #candidates == 0 then
+        isBuying = false
+        return
+    end
+
+    local target = candidates[1]
+    local char = lp.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then isBuying = false return end
+
+    -- Teleport ke slot
+    local slotName = target.pp.Parent.Name
+    local targetPos = SlotPositions[slotName]
+    if targetPos then
+        hrp.CFrame = CFrame.new(targetPos + Vector3.new(4, 0, 0))
+            * CFrame.Angles(0, -math.pi/2, 0)
+    end
+
+    task.wait(CONFIG.teleportWait)
+
+    -- Snapshot cash sebelum beli
+    readCash()
+    local cashBefore = localCash
+
+    fireproximityprompt(target.pp)
+
+    -- Konfirmasi via cash berkurang
+    local confirmed = false
+    local elapsed = 0
+    while elapsed < CONFIG.confirmTimeout do
+        task.wait(0.2)
+        elapsed = elapsed + 0.2
+        readCash()
+        if localCash <= cashBefore - target.cost then
+            confirmed = true
+            break
+        end
+    end
+
+    if confirmed then
+        boughtThisShop[target.name] = true
+        addLog(string.format("✅ %s ($%d)", target.name, target.cost), true)
+        isBuying = false
+        task.wait(CONFIG.buyDelay)
+        tryBuy()
+    else
+        addLog(string.format("❌ %s — retry", target.name), false)
+        isBuying = false
+        task.wait(0.5)
+        tryBuy()
+    end
+end
+
+-- Hook shop open
+local notifyRE = Net:FindFirstChild("RE/Notify")
+if notifyRE then
+    notifyRE.OnClientEvent:Connect(function(msg)
+        if type(msg) ~= "string" then return end
+        if msg == "The shop is open!" then
+            boughtThisShop = {}
+            task.delay(0.8, function()
+                if config.enabled then task.spawn(tryBuy) end
+            end)
+        end
+    end)
+end
+
+-- ══════════════════════════════════════════════════════
+-- GUI
+-- ══════════════════════════════════════════════════════
+local playerGui = lp:WaitForChild("PlayerGui")
+local existing = playerGui:FindFirstChild("AxiomAutoBuy")
+if existing then existing:Destroy() end
+
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "AxiomAutoBuy"
+screenGui.ResetOnSpawn = false
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.Parent = playerGui
+
+-- Main frame
+local main = Instance.new("Frame")
+main.Size = UDim2.new(0, 280, 0, 370)
+main.Position = UDim2.new(1, -300, 0.5, -185)
+main.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
+main.BorderSizePixel = 0
+main.Active = true
+main.Draggable = true
+main.Parent = screenGui
+Instance.new("UICorner", main).CornerRadius = UDim.new(0, 8)
+
+-- Header
+local header = Instance.new("Frame")
+header.Size = UDim2.new(1, 0, 0, 34)
+header.BackgroundColor3 = Color3.fromRGB(25, 25, 38)
+header.BorderSizePixel = 0
+header.Parent = main
+Instance.new("UICorner", header).CornerRadius = UDim.new(0, 8)
+
+local titleLbl = Instance.new("TextLabel")
+titleLbl.Size = UDim2.new(1, -70, 1, 0)
+titleLbl.Position = UDim2.new(0, 10, 0, 0)
+titleLbl.BackgroundTransparency = 1
+titleLbl.TextColor3 = Color3.fromRGB(255,255,255)
+titleLbl.Font = Enum.Font.GothamBold
+titleLbl.TextSize = 12
+titleLbl.TextXAlignment = Enum.TextXAlignment.Left
+titleLbl.Text = "🛒 AXIOM AUTO BUY"
+titleLbl.Parent = header
+
+-- Minimize button
+local minBtn = Instance.new("TextButton")
+minBtn.Size = UDim2.new(0, 26, 0, 22)
+minBtn.Position = UDim2.new(1, -56, 0.5, -11)
+minBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
+minBtn.TextColor3 = Color3.fromRGB(255,255,255)
+minBtn.Font = Enum.Font.GothamBold
+minBtn.TextSize = 12
+minBtn.Text = "−"
+minBtn.BorderSizePixel = 0
+minBtn.Parent = header
+Instance.new("UICorner", minBtn).CornerRadius = UDim.new(0, 4)
+
+-- Close button
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0, 26, 0, 22)
+closeBtn.Position = UDim2.new(1, -28, 0.5, -11)
+closeBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
+closeBtn.TextColor3 = Color3.fromRGB(255,255,255)
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextSize = 12
+closeBtn.Text = "X"
+closeBtn.BorderSizePixel = 0
+closeBtn.Parent = header
+Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 4)
+
+-- Content frame (yang di-hide saat minimize)
+local content = Instance.new("Frame")
+content.Size = UDim2.new(1, 0, 1, -34)
+content.Position = UDim2.new(0, 0, 0, 34)
+content.BackgroundTransparency = 1
+content.BorderSizePixel = 0
+content.Parent = main
+
+-- Status row
+local statusRow = Instance.new("Frame")
+statusRow.Size = UDim2.new(1, -16, 0, 26)
+statusRow.Position = UDim2.new(0, 8, 0, 8)
+statusRow.BackgroundColor3 = Color3.fromRGB(22, 22, 32)
+statusRow.BorderSizePixel = 0
+statusRow.Parent = content
+Instance.new("UICorner", statusRow).CornerRadius = UDim.new(0, 5)
+
+local dot = Instance.new("Frame")
+dot.Size = UDim2.new(0, 8, 0, 8)
+dot.Position = UDim2.new(0, 8, 0.5, -4)
+dot.BackgroundColor3 = Color3.fromRGB(180,60,60)
+dot.BorderSizePixel = 0
+dot.Parent = statusRow
+Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
+
+local statusLbl = Instance.new("TextLabel")
+statusLbl.Size = UDim2.new(1, -24, 1, 0)
+statusLbl.Position = UDim2.new(0, 22, 0, 0)
+statusLbl.BackgroundTransparency = 1
+statusLbl.TextColor3 = Color3.fromRGB(180,60,60)
+statusLbl.Font = Enum.Font.GothamBold
+statusLbl.TextSize = 11
+statusLbl.TextXAlignment = Enum.TextXAlignment.Left
+statusLbl.Text = "INACTIVE"
+statusLbl.Parent = statusRow
+
+-- Cash label
+local cashLbl = Instance.new("TextLabel")
+cashLbl.Size = UDim2.new(1, -16, 0, 18)
+cashLbl.Position = UDim2.new(0, 8, 0, 40)
+cashLbl.BackgroundTransparency = 1
+cashLbl.TextColor3 = Color3.fromRGB(80,220,120)
+cashLbl.Font = Enum.Font.GothamBold
+cashLbl.TextSize = 11
+cashLbl.TextXAlignment = Enum.TextXAlignment.Left
+cashLbl.Text = "💰 Cash: $0"
+cashLbl.Parent = content
+
+-- Mode label
+local modeLbl = Instance.new("TextLabel")
+modeLbl.Size = UDim2.new(1, -16, 0, 14)
+modeLbl.Position = UDim2.new(0, 8, 0, 62)
+modeLbl.BackgroundTransparency = 1
+modeLbl.TextColor3 = Color3.fromRGB(150,150,170)
+modeLbl.Font = Enum.Font.GothamBold
+modeLbl.TextSize = 10
+modeLbl.TextXAlignment = Enum.TextXAlignment.Left
+modeLbl.Text = "MODE"
+modeLbl.Parent = content
+
+-- Mode buttons (4 modes)
+local modes = {"TOOL","UPGRADE","ALL","NONE"}
+local modeBtns = {}
+local btnW = 60
+for i, mode in ipairs(modes) do
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0, btnW, 0, 24)
+    btn.Position = UDim2.new(0, 8 + (i-1)*(btnW+4), 0, 78)
+    btn.BackgroundColor3 = mode == config.mode
+        and Color3.fromRGB(60,130,220)
+        or Color3.fromRGB(35,35,50)
+    btn.TextColor3 = Color3.fromRGB(255,255,255)
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 10
+    btn.Text = mode
+    btn.BorderSizePixel = 0
+    btn.Parent = content
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 5)
+    modeBtns[mode] = btn
+end
+
+local function setMode(sel)
+    config.mode = sel
+    for m, b in pairs(modeBtns) do
+        b.BackgroundColor3 = m == sel
+            and Color3.fromRGB(60,130,220)
+            or Color3.fromRGB(35,35,50)
+    end
+end
+for _, m in ipairs(modes) do
+    modeBtns[m].MouseButton1Click:Connect(function() setMode(m) end)
+end
+
+-- Budget label + box
+local budgetLbl = Instance.new("TextLabel")
+budgetLbl.Size = UDim2.new(1, -16, 0, 14)
+budgetLbl.Position = UDim2.new(0, 8, 0, 108)
+budgetLbl.BackgroundTransparency = 1
+budgetLbl.TextColor3 = Color3.fromRGB(150,150,170)
+budgetLbl.Font = Enum.Font.GothamBold
+budgetLbl.TextSize = 10
+budgetLbl.TextXAlignment = Enum.TextXAlignment.Left
+budgetLbl.Text = "MAX SPEND PER ITEM (0 = unlimited)"
+budgetLbl.Parent = content
+
+local budgetBox = Instance.new("TextBox")
+budgetBox.Size = UDim2.new(1, -16, 0, 24)
+budgetBox.Position = UDim2.new(0, 8, 0, 124)
+budgetBox.BackgroundColor3 = Color3.fromRGB(28,28,42)
+budgetBox.TextColor3 = Color3.fromRGB(255,255,255)
+budgetBox.Font = Enum.Font.Gotham
+budgetBox.TextSize = 12
+budgetBox.Text = tostring(config.budget)
+budgetBox.BorderSizePixel = 0
+budgetBox.ClearTextOnFocus = false
+budgetBox.Parent = content
+Instance.new("UICorner", budgetBox).CornerRadius = UDim.new(0, 5)
+budgetBox.FocusLost:Connect(function()
+    config.budget = tonumber(budgetBox.Text) or 0
+    budgetBox.Text = tostring(config.budget)
+end)
+
+-- Toggle button
+local toggleBtn = Instance.new("TextButton")
+toggleBtn.Size = UDim2.new(1, -16, 0, 30)
+toggleBtn.Position = UDim2.new(0, 8, 0, 154)
+toggleBtn.BackgroundColor3 = Color3.fromRGB(60,180,100)
+toggleBtn.TextColor3 = Color3.fromRGB(255,255,255)
+toggleBtn.Font = Enum.Font.GothamBold
+toggleBtn.TextSize = 13
+toggleBtn.Text = "▶ ENABLE"
+toggleBtn.BorderSizePixel = 0
+toggleBtn.Parent = content
+Instance.new("UICorner", toggleBtn).CornerRadius = UDim.new(0, 6)
+
+local function updateStatus()
+    if config.enabled then
+        dot.BackgroundColor3 = Color3.fromRGB(60,220,100)
+        statusLbl.TextColor3 = Color3.fromRGB(60,220,100)
+        statusLbl.Text = "ACTIVE — "..config.mode
+        toggleBtn.BackgroundColor3 = Color3.fromRGB(180,60,60)
+        toggleBtn.Text = "⏹ DISABLE"
+    else
+        dot.BackgroundColor3 = Color3.fromRGB(180,60,60)
+        statusLbl.TextColor3 = Color3.fromRGB(180,60,60)
+        statusLbl.Text = "INACTIVE"
+        toggleBtn.BackgroundColor3 = Color3.fromRGB(60,180,100)
+        toggleBtn.Text = "▶ ENABLE"
+    end
+end
+
+toggleBtn.MouseButton1Click:Connect(function()
+    config.enabled = not config.enabled
+    updateStatus()
+    if config.enabled then task.spawn(tryBuy) end
+end)
+
+-- Log label
+local logTitleLbl = Instance.new("TextLabel")
+logTitleLbl.Size = UDim2.new(1, -16, 0, 14)
+logTitleLbl.Position = UDim2.new(0, 8, 0, 192)
+logTitleLbl.BackgroundTransparency = 1
+logTitleLbl.TextColor3 = Color3.fromRGB(150,150,170)
+logTitleLbl.Font = Enum.Font.GothamBold
+logTitleLbl.TextSize = 10
+logTitleLbl.TextXAlignment = Enum.TextXAlignment.Left
+logTitleLbl.Text = "PURCHASE LOG"
+logTitleLbl.Parent = content
+
+-- Log scroll
+local logScroll = Instance.new("ScrollingFrame")
+logScroll.Size = UDim2.new(1, -16, 0, 108)
+logScroll.Position = UDim2.new(0, 8, 0, 208)
+logScroll.BackgroundColor3 = Color3.fromRGB(18,18,28)
+logScroll.BorderSizePixel = 0
+logScroll.ScrollBarThickness = 3
+logScroll.ScrollBarImageColor3 = Color3.fromRGB(80,200,120)
+logScroll.CanvasSize = UDim2.new(0,0,0,0)
+logScroll.Parent = content
+Instance.new("UICorner", logScroll).CornerRadius = UDim.new(0, 5)
+
+local logLayout = Instance.new("UIListLayout")
+logLayout.SortOrder = Enum.SortOrder.LayoutOrder
+logLayout.Padding = UDim.new(0, 2)
+logLayout.Parent = logScroll
+
+local logPad = Instance.new("UIPadding")
+logPad.PaddingLeft = UDim.new(0,6)
+logPad.PaddingTop = UDim.new(0,4)
+logPad.Parent = logScroll
+
+-- Log rebuild
+local function rebuildLog()
+    for _, c in ipairs(logScroll:GetChildren()) do
+        if c:IsA("TextLabel") then c:Destroy() end
+    end
+    for i, entry in ipairs(buyLog) do
+        local row = Instance.new("TextLabel")
+        row.Size = UDim2.new(1, -8, 0, 16)
+        row.BackgroundTransparency = 1
+        row.TextColor3 = entry.success
+            and Color3.fromRGB(100,220,130)
+            or Color3.fromRGB(220,100,100)
+        row.Font = Enum.Font.Gotham
+        row.TextSize = 10
+        row.TextXAlignment = Enum.TextXAlignment.Left
+        row.TextTruncate = Enum.TextTruncate.AtEnd
+        row.Text = entry.text
+        row.LayoutOrder = i
+        row.Parent = logScroll
+    end
+    logScroll.CanvasSize = UDim2.new(0,0,0,#buyLog*18+8)
+end
+
+logCallback = rebuildLog
+
+-- Cash update loop
+task.spawn(function()
+    while _G.AxiomAutoBuyActive == myToken do
+        cashLbl.Text = "💰 Cash: $"..localCash
+        task.wait(1)
+    end
+end)
+
+-- Minimize logic
+local minimized = CONFIG.startMinimized
+local function applyMinimize()
+    if minimized then
+        content.Visible = false
+        main.Size = UDim2.new(0, 280, 0, 34)
+        minBtn.Text = "+"
+    else
+        content.Visible = true
+        main.Size = UDim2.new(0, 280, 0, 370)
+        minBtn.Text = "−"
+    end
+end
+
+minBtn.MouseButton1Click:Connect(function()
+    minimized = not minimized
+    applyMinimize()
+end)
+
+-- Close logic
+closeBtn.MouseButton1Click:Connect(function()
+    _G.AxiomAutoBuyActive = false
+    screenGui:Destroy()
+    print("[AXIOM] Auto Buy killed — bersih total boss man")
+end)
+
+-- Apply initial state
+applyMinimize()
+updateStatus()
+if CONFIG.startEnabled then task.spawn(tryBuy) end
+
+print("[AXIOM] Auto Buy v3 loaded boss man")
