@@ -60,6 +60,7 @@ local scriptsByPlaceId = {
         "https://cdn.jsdelivr.net/gh/ricardsteven178/mnsterrel@main/PelengkapV2",
         "https://cdn.jsdelivr.net/gh/ricardsteven178/mnsterrel@main/DoctersV1",
         "https://cdn.jsdelivr.net/gh/ricardsteven178/mnsterrel@main/NoGameDead",
+        "https://cdn.jsdelivr.net/gh/ricardsteven178/mnsterrel@main/BeliV1",
         "https://cdn.jsdelivr.net/gh/ricardsteven178/mnsterrel@main/AntiAFK",
         "https://cdn.jsdelivr.net/gh/ricardsteven178/mnsterrel@main/0"--print
     },
