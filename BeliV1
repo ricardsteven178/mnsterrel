@@ -8,8 +8,8 @@
 local CONFIG = {
     mode          = "UPGRADE", -- "TOOL" | "UPGRADE" | "ALL" | "NONE"
     budget        = 0,         -- max spend per item, 0 = unlimited
-    startEnabled  = false,     -- true = langsung aktif saat execute
-    startMinimized = false,    -- true = langsung minimize saat execute
+    startEnabled  = true,     -- true = langsung aktif saat execute
+    startMinimized = true,    -- true = langsung minimize saat execute
     buyDelay      = 0.3,       -- detik jeda antar pembelian
     teleportWait  = 0.3,       -- detik tunggu setelah teleport sebelum fire
     confirmTimeout = 3,        -- detik timeout konfirmasi cash berkurang
