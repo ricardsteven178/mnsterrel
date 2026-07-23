@@ -1,0 +1,4052 @@
+task.wait(5)
+-- ==========================================
+-- AUTO DOCTOR: COMBINED EDITION (Medical R1-5 + Emergency R6/R7/R8) batas perlu uji coba update buang obat fix + update masalah npx keluar script masih tp + rapi config
+-- Landasan: Script 1 | Emergency ext: Script 2, 3, 4
+-- ==========================================
+
+-- ==========================================
+-- ANTI DOUBLE EXECUTE & CLEANUP (SAFE MODE)
+-- ==========================================
+pcall(function() if _G.AutoDoctor_Main then _G.AutoDoctor_Main:Destroy() end end)
+pcall(function() if _G.AutoDoctor_Watchdog then task.cancel(_G.AutoDoctor_Watchdog) end end)
+pcall(function() if _G.AutoDoctor_Worker then task.cancel(_G.AutoDoctor_Worker) end end)
+pcall(function() if _G.AutoDoctor_RadarLoop then task.cancel(_G.AutoDoctor_RadarLoop) end end)
+pcall(function() if _G.AutoDoctor_NotifLoop then _G.AutoDoctor_NotifLoop:Disconnect() end end)
+pcall(function() if _G.AutoRoom7_Worker then task.cancel(_G.AutoRoom7_Worker) end end)
+pcall(function() if _G.AutoRoom7_Watchdog then task.cancel(_G.AutoRoom7_Watchdog) end end)
+pcall(function() if _G.Room6_Loop then task.cancel(_G.Room6_Loop) end end)
+pcall(function() if _G.Room8Auto_Worker then task.cancel(_G.Room8Auto_Worker) end end)
+pcall(function() if _G.Room8Auto_Watchdog then task.cancel(_G.Room8Auto_Watchdog) end end)
+pcall(function()
+    if _G.AutoDoctor_Radars then
+        for _, radar in pairs(_G.AutoDoctor_Radars) do if radar then radar:Destroy() end end
+    end
+end)
+_G.AutoDoctor_Radars       = {}
+_G.AutoDoctor_RoomMemory   = {}
+_G.AutoDoctor_ItemCache    = {}
+_G.AutoDoctor_TrashCache   = nil
+_G.Room8_ItemCache         = {}
+_G.Room8_TrashCache        = nil
+
+_G.ER_Memory               = {
+    [6] = nil,
+    [7] = nil,
+    [8] = nil,
+}
+
+-- ==========================================
+-- CONFIGURATION & SETTINGS
+-- ==========================================
+local Config = {
+
+    -- ==========================================
+    -- AUTO-START: Aktifkan modul otomatis saat script diload
+    -- true = langsung jalan, false = manual tekan tombol
+    -- ==========================================
+    AutoStart_Medical   = true,     -- Room 1-5 Medical Wing
+    AutoStart_R6        = true,     -- Room 6 Emergency
+    AutoStart_R7        = true,     -- Room 7 Emergency
+    AutoStart_R8        = true,     -- Room 8 Emergency Surgery
+
+    -- ==========================================
+    -- FITUR UTAMA
+    -- ==========================================
+    AnomalyKiller       = true,     -- true = inject racun ke NPC anomali (Skinwalker dll)
+    ShowRadar           = true,     -- true = tampilkan lingkaran radar di workspace
+    ShowConsoleLogs     = true,     -- true = print log detail di console (F9)
+
+    -- ==========================================
+    -- ROOM SETTINGS
+    -- ==========================================
+    MaxRooms            = 5,        -- Jumlah room Medical (1-5), jangan diubah
+    EmergencyRooms      = {6, 7, 8},-- Room Emergency, jangan diubah
+
+    -- ==========================================
+    -- INVENTORY
+    -- ==========================================
+    MaxInventory        = 5,        -- Kapasitas tas default (auto-kalibrasi dari notif game)
+
+    -- ==========================================
+    -- TIMING — MEDICAL R1-5
+    -- ==========================================
+    ScanDelay           = 0.5,      -- Jeda antar scan room saat idle (detik)
+    InjectionDelay      = 1,        -- Jeda setelah inject obat ke pasien (detik)
+    PatientBedRadius    = 10,       -- Radius deteksi NPC di sekitar kasur (studs)
+    MAX_PATIENT_WAIT    = 12,       -- Maks tunggu NPC datang ke kasur sebelum skip (detik)
+
+    -- ==========================================
+    -- TIMING — EMERGENCY R8
+    -- ==========================================
+    R8_NPC_WaitMax      = 8,        -- Maks tunggu NPC valid muncul di R8 (detik)
+    R8_SleepWaitMax     = 10,       -- Maks tunggu Sleep PP muncul di R8 (detik)
+    R8_NoSleepBailout   = 6,        -- Bail out kalau Sleep PP tidak muncul X detik (detik)
+
+    -- ==========================================
+    -- ANTI-STUCK & TIMEOUT
+    -- ==========================================
+    StuckTimeout        = 25,       -- Maks waktu tanpa progress di 1 room sebelum skip (detik)
+    GlobalStuckTimeout  = 45,       -- Maks waktu master cycle tidak update sebelum hard-reset (detik)
+    BlacklistDuration   = 60,       -- Durasi room di-blacklist setelah stuck (detik)
+    IdleTimeout         = 30,       -- Maks idle tanpa aksi sebelum paksa re-scan semua (detik)
+    ER_MemoryTimeout    = 90,       -- Maks waktu ER memory nge-block NPC yang sama (detik)
+    ER_DoneTimeout      = 30,       -- Maks tunggu NPC "done" keluar dari area (detik)
+
+    -- ==========================================
+    -- POSISI IDLE (jangan diubah kecuali map berubah)
+    -- ==========================================
+    IdleCFrame = CFrame.new(
+        -102.853859, 3.41253114, 2.83109426,
+         0.660403967, -5.88231437e-08, -0.750910521,
+         1.04164357e-07, 1, 1.32737652e-08,
+         0.750910521, -8.69841585e-08, 0.660403967
+    ),
+}
+
+local RoomCFrames = {
+    [1] = CFrame.new(-175.075592, 3.45753217, -43.3536415, 0.770063639, -6.97426117e-08, -0.63796705, 8.6692296e-08, 1, -4.67739758e-09, 0.63796705, -5.17049372e-08, 0.770063639),
+    [2] = CFrame.new(-115.003395, 3.45753145, -57.2858963, -0.190040156, 1.07498074e-07, -0.981776297, 2.6608399e-08, 1, 1.04342924e-07, 0.981776297, -6.29414965e-09, -0.190040156),
+    [3] = CFrame.new(-175.001511, 3.45753074, -83.3180084, -0.963504076, 5.82683874e-08, 0.267693579, 5.90418274e-08, 1, -5.16017407e-09, -0.267693579, 1.08332703e-08, -0.963504076),
+    [4] = CFrame.new(-114.560425, 3.45753121, -95.8058395, 0.515707195, 3.46584317e-09, -0.856764913, 1.25138766e-09, 1, 4.79850737e-09, 0.856764913, -3.54676977e-09, 0.515707195),
+    [5] = CFrame.new(-150.196869, 3.45753121, -121.005722, -0.147346541, -4.3152884e-10, 0.989084899, -3.4249055e-11, 1, 4.31188835e-10, -0.989084899, 2.96589628e-31, -0.147346541),
+}
+
+local EmergencyCFrames = {
+    [6] = {
+        Room      = CFrame.new(-171.493195, 3.4575305, 57.6354637, -0.097861506, 5.37626921e-09, 0.995200038, -8.93599061e-09, 1, -6.28090646e-09, -0.995200038, -9.50775725e-09, -0.097861506),
+        Patient   = CFrame.new(-181.526611, 3.45959258, 53.844574, -0.612864494, 7.89692507e-08, 0.790188015, 2.16129803e-09, 1, -9.82609976e-08, -0.790188015, -5.85128461e-08, -0.612864494),
+        Radius    = 9,
+    },
+    [7] = {
+        Step1 = CFrame.new(-105.403381, 3.45753121, 47.803978, 0.725760221, -4.12834709e-08, -0.68794775, 3.55443142e-08, 1, -2.25116281e-08, 0.68794775, -8.11458634e-09, 0.725760221),
+        Step2 = CFrame.new(-108.28727, 3.45753074, 56.7980232, 0.240545362, 7.5386497e-09, -0.970637918, 1.96511998e-08, 1, 1.26366944e-08, 0.970637918, -2.21138965e-08, 0.240545362),
+        Step3 = CFrame.new(-125.265869, 3.45753074, 60.2830925, -0.990286827, 4.62577932e-09, 0.139039472, 2.54290988e-09, 1, -1.5158065e-08, -0.139039472, -1.46572674e-08, -0.990286827),
+        Radius = 15,
+    },
+    [8] = {
+        Bed       = CFrame.new(-144.672638, 6.16752958, 100.503311, -0.999112546, -1.91463567e-10, 0.0421201028, -4.46858051e-10, 1, -6.05406703e-09, -0.0421201028, -6.06751627e-09, -0.999112546),
+        Radius    = 10,
+    },
+}
+
+local ItemList = {
+    "Herbs", "Medicine", "Maple Syrup", "Cough Syrup", "Bandages",
+    "Ointment", "Thermo", "Medkit", "IV Drops", "Eye Drops",
+    "Antibiotics", "Scalpel", "Scissors", "Organ", "Transplant"
+}
+
+-- ==========================================
+-- SERVICES & VARIABLES
+-- ==========================================
+local Players             = game:GetService("Players")
+local RunService          = game:GetService("RunService")
+local workspace           = game:GetService("Workspace")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local GuiService          = game:GetService("GuiService")
+local LocalPlayer         = Players.LocalPlayer
+local PlayerGui           = LocalPlayer:WaitForChild("PlayerGui")
+
+local isBusy_Medical       = false
+local autoScanEnabled      = false
+local isRadarVisible       = Config.ShowRadar
+local BuggedRoomBlacklist  = {}
+_G.AutoDoctor_LastActionTick = tick()
+_G.AutoDoctor_IsIdle         = false
+_G.LastStatus                = ""
+_G.LastRadarReport           = ""
+
+local isBusy_R6             = false
+local autoEnabled_R6        = false
+local stopColorTracker      = false
+local cancelClicking        = false
+local isAutoPlayingMinigame = false
+_G.Room6_IsIdle             = false
+_G.LastRoom6Status          = ""
+local Room6sequenceInstances = {}
+local Room6lastFlashTime    = tick()
+local Room6buttonTasks      = {}
+
+local isBusy_R7             = false
+local autoEnabled_R7        = false
+local isAutoPlaying_R7      = false
+local totalHand, totalSkull = 0, 0
+local minigameConnections   = {}
+_G.AutoRoom7_LastActionTick = tick()
+_G.AutoRoom7_BlacklistTime  = 0
+_G.AutoRoom7_IsIdle         = false
+_G.AutoRoom7_LastPatient    = nil
+_G.AutoRoom7_LegitHealing   = false
+local ID_HAND  = "rbxassetid://76833679466645"
+local ID_SKULL = "rbxassetid://2766332187"
+
+local isBusy_R8             = false
+local autoEnabled_R8        = false
+local isBotIdle_R8          = false
+_G.Room8Auto_LastActionTick = tick()
+
+-- ==========================================
+-- INVENTORY MUTEX
+-- ==========================================
+local InventoryMutex = {
+    _locked   = false,
+    _owner    = nil,
+    _lockTime = 0,
+    _timeout  = 15,
+}
+
+function InventoryMutex:lock(owner)
+    local waited = 0
+    while self._locked do
+        if tick() - self._lockTime > self._timeout then
+            warn("[InvMutex] Force-release dari " .. tostring(self._owner))
+            self._locked = false; self._owner = nil; break
+        end
+        task.wait(0.1); waited = waited + 0.1
+        if waited > 10 then
+            warn("[InvMutex] " .. owner .. " timeout tunggu, force lanjut")
+            break
+        end
+    end
+    self._locked = true; self._owner = owner; self._lockTime = tick()
+end
+
+function InventoryMutex:unlock(owner)
+    if self._owner == owner then
+        self._locked = false; self._owner = nil
+    end
+end
+
+local GlobalMutex = InventoryMutex
+
+-- ==========================================
+-- ANOMALY KILLER HELPER — FIXED
+-- Prioritas: cek inventory dulu, lalu scan workspace
+-- Sort kandidat berdasarkan yang paling mudah didapat
+-- Guard: tidak loop ulang setelah berhasil inject
+-- ==========================================
+local function findAndFetchWrongMedicine(prescribedMeds, fetchFn, roomTag)
+    local bp   = LocalPlayer:FindFirstChild("Backpack")
+    local char = LocalPlayer.Character
+
+    -- Kumpulkan semua kandidat: item yang BUKAN bagian dari resep pasien
+    local candidates = {}
+    for _, item in ipairs(ItemList) do
+        if not table.find(prescribedMeds, item) then
+            table.insert(candidates, item)
+        end
+    end
+    -- Pastikan "Medicine" selalu ada sebagai fallback terakhir
+    if not table.find(candidates, "Medicine") then
+        table.insert(candidates, "Medicine")
+    end
+
+    -- STEP 1: Cek yang sudah ada di inventory — paling cepat, zero fetch
+    for _, item in ipairs(candidates) do
+        bp   = LocalPlayer:FindFirstChild("Backpack")
+        char = LocalPlayer.Character
+        if (bp and bp:FindFirstChild(item)) or (char and char:FindFirstChild(item)) then
+            if Config.ShowConsoleLogs then
+                print("[AnomalyKiller] Racun di inventory: " .. item)
+            end
+            return item
+        end
+    end
+
+    -- STEP 2: Scan workspace untuk semua kandidat yang promptnya ada
+    -- Urutkan berdasarkan jarak dari player (ambil yang terdekat dulu)
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    local playerPos = root and root.Position or Vector3.zero
+
+    local available = {}  -- { item=string, prompt=Instance, dist=number }
+    for _, item in ipairs(candidates) do
+        local tLower = string.lower(item)
+        for _, desc in ipairs(workspace:GetDescendants()) do
+            if desc:IsA("ProximityPrompt") and desc.Enabled then
+                local pName = string.lower(desc.Parent and desc.Parent.Name or "")
+                local oText = string.lower(desc.ObjectText or "")
+                local aText = string.lower(desc.ActionText or "")
+                if pName:match(tLower) or oText:match(tLower) or aText:match(tLower) then
+                    local part = desc.Parent
+                    local partPos = nil
+                    if part:IsA("BasePart") then partPos = part.Position
+                    elseif part:IsA("Attachment") then partPos = part.WorldPosition end
+                    local dist = partPos and (partPos - playerPos).Magnitude or math.huge
+                    table.insert(available, { item = item, prompt = desc, dist = dist })
+                    break  -- satu prompt per item cukup
+                end
+            end
+        end
+    end
+
+    -- Sort terdekat dulu
+    table.sort(available, function(a, b) return a.dist < b.dist end)
+
+    if Config.ShowConsoleLogs then
+        print("[AnomalyKiller] Kandidat racun tersedia: " .. #available)
+        for i, v in ipairs(available) do
+            print("  [" .. i .. "] " .. v.item .. " (dist: " .. string.format("%.1f", v.dist) .. ")")
+        end
+    end
+
+    -- STEP 3: Coba fetch satu per satu, terdekat dulu
+    for _, entry in ipairs(available) do
+        local item = entry.item
+        if Config.ShowConsoleLogs then
+            print("[AnomalyKiller] Coba ambil racun: " .. item)
+        end
+        local ok = fetchFn(item, {item})
+        if ok then
+            bp   = LocalPlayer:FindFirstChild("Backpack")
+            char = LocalPlayer.Character
+            if (bp and bp:FindFirstChild(item)) or (char and char:FindFirstChild(item)) then
+                if Config.ShowConsoleLogs then
+                    print("[AnomalyKiller] Racun berhasil diambil: " .. item)
+                end
+                return item
+            end
+        end
+        -- Item tidak bisa diambil (stok kosong/server lag), coba berikutnya
+    end
+
+    -- STEP 4: Fallback paksa — coba "Medicine" walau tidak ada di available list
+    if Config.ShowConsoleLogs then
+        print("[AnomalyKiller] Semua kandidat gagal, fallback ke Medicine")
+    end
+    local okFallback = fetchFn("Medicine", {"Medicine"})
+    if okFallback then
+        bp   = LocalPlayer:FindFirstChild("Backpack")
+        char = LocalPlayer.Character
+        if (bp and bp:FindFirstChild("Medicine")) or (char and char:FindFirstChild("Medicine")) then
+            return "Medicine"
+        end
+    end
+
+    return nil
+end
+
+-- ==========================================
+-- GUI CREATION (UNIFIED TABBED PANEL)
+-- ==========================================
+local guiParent = LocalPlayer:FindFirstChild("PlayerGui") or LocalPlayer:WaitForChild("PlayerGui", 5)
+if not guiParent then warn("[Auto Doctor Combined] PlayerGui tidak ditemukan.") return end
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "AutoDoctorCombinedUI"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = guiParent
+_G.AutoDoctor_Main = ScreenGui
+
+local MainFrame = Instance.new("Frame")
+MainFrame.Size       = UDim2.new(0, 300, 0, 310)
+MainFrame.Position   = UDim2.new(0.5, -150, 0.5, -155)
+MainFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
+MainFrame.BorderSizePixel  = 0
+MainFrame.Active     = true
+MainFrame.Draggable  = true
+MainFrame.ClipsDescendants = true
+MainFrame.Parent     = ScreenGui
+Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
+
+local stroke = Instance.new("UIStroke", MainFrame)
+stroke.Color     = Color3.fromRGB(0, 200, 120)
+stroke.Thickness = 1
+stroke.Transparency = 0.6
+
+local TitleBar = Instance.new("Frame")
+TitleBar.Size            = UDim2.new(1, 0, 0, 34)
+TitleBar.BackgroundColor3 = Color3.fromRGB(0, 160, 90)
+TitleBar.BorderSizePixel  = 0
+TitleBar.Parent           = MainFrame
+Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 10)
+
+local TitleCover = Instance.new("Frame")
+TitleCover.Size            = UDim2.new(1, 0, 0, 12)
+TitleCover.Position        = UDim2.new(0, 0, 1, -12)
+TitleCover.BackgroundColor3 = Color3.fromRGB(0, 160, 90)
+TitleCover.BorderSizePixel  = 0
+TitleCover.Parent           = TitleBar
+
+local TitleIcon = Instance.new("TextLabel")
+TitleIcon.Size              = UDim2.new(0, 30, 1, 0)
+TitleIcon.Position          = UDim2.new(0, 6, 0, 0)
+TitleIcon.BackgroundTransparency = 1
+TitleIcon.Text              = "⚕"
+TitleIcon.TextColor3        = Color3.fromRGB(255, 255, 255)
+TitleIcon.Font              = Enum.Font.GothamBold
+TitleIcon.TextSize          = 16
+TitleIcon.Parent            = TitleBar
+
+local TitleText = Instance.new("TextLabel")
+TitleText.Size              = UDim2.new(1, -90, 1, 0)
+TitleText.Position          = UDim2.new(0, 34, 0, 0)
+TitleText.BackgroundTransparency = 1
+TitleText.Text              = "Auto Doctor — Combined"
+TitleText.TextColor3        = Color3.fromRGB(255, 255, 255)
+TitleText.Font              = Enum.Font.GothamBold
+TitleText.TextSize          = 12
+TitleText.TextXAlignment    = Enum.TextXAlignment.Left
+TitleText.Parent            = TitleBar
+
+local MinimizeBtn = Instance.new("TextButton")
+MinimizeBtn.Size            = UDim2.new(0, 28, 0, 28)
+MinimizeBtn.Position        = UDim2.new(1, -58, 0, 3)
+MinimizeBtn.BackgroundColor3 = Color3.fromRGB(255, 200, 0)
+MinimizeBtn.Text            = "—"
+MinimizeBtn.TextColor3      = Color3.fromRGB(60, 40, 0)
+MinimizeBtn.Font            = Enum.Font.GothamBold
+MinimizeBtn.TextSize        = 13
+MinimizeBtn.Parent          = TitleBar
+Instance.new("UICorner", MinimizeBtn).CornerRadius = UDim.new(0, 6)
+
+local CloseBtn = Instance.new("TextButton")
+CloseBtn.Size               = UDim2.new(0, 28, 0, 28)
+CloseBtn.Position           = UDim2.new(1, -28, 0, 3)
+CloseBtn.BackgroundColor3   = Color3.fromRGB(220, 50, 50)
+CloseBtn.Text               = "✕"
+CloseBtn.TextColor3         = Color3.fromRGB(255, 255, 255)
+CloseBtn.Font               = Enum.Font.GothamBold
+CloseBtn.TextSize           = 13
+CloseBtn.Parent             = TitleBar
+Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 6)
+
+local TabBar = Instance.new("Frame")
+TabBar.Size              = UDim2.new(1, 0, 0, 30)
+TabBar.Position          = UDim2.new(0, 0, 0, 34)
+TabBar.BackgroundColor3  = Color3.fromRGB(26, 26, 34)
+TabBar.BorderSizePixel   = 0
+TabBar.Parent            = MainFrame
+
+local TabLayout = Instance.new("UIListLayout", TabBar)
+TabLayout.FillDirection  = Enum.FillDirection.Horizontal
+TabLayout.SortOrder      = Enum.SortOrder.LayoutOrder
+TabLayout.Padding        = UDim.new(0, 0)
+
+local tabNames = {"Medical", "R6", "R7", "R8"}
+local tabColors = {
+    Medical = Color3.fromRGB(0, 170, 100),
+    R6      = Color3.fromRGB(180, 60, 200),
+    R7      = Color3.fromRGB(255, 140, 0),
+    R8      = Color3.fromRGB(220, 50, 50),
+}
+local tabBtns = {}
+local tabPages = {}
+
+for i, name in ipairs(tabNames) do
+    local btn = Instance.new("TextButton")
+    btn.Size              = UDim2.new(0.25, 0, 1, 0)
+    btn.BackgroundColor3  = Color3.fromRGB(26, 26, 34)
+    btn.BorderSizePixel   = 0
+    btn.Text              = name
+    btn.TextColor3        = Color3.fromRGB(140, 140, 160)
+    btn.Font              = Enum.Font.GothamSemibold
+    btn.TextSize          = 11
+    btn.LayoutOrder       = i
+    btn.Parent            = TabBar
+    tabBtns[name] = btn
+end
+
+local ContentArea = Instance.new("Frame")
+ContentArea.Size             = UDim2.new(1, 0, 1, -64)
+ContentArea.Position         = UDim2.new(0, 0, 0, 64)
+ContentArea.BackgroundTransparency = 1
+ContentArea.Parent           = MainFrame
+
+local function makePage(name)
+    local page = Instance.new("Frame")
+    page.Size                = UDim2.new(1, 0, 1, 0)
+    page.BackgroundTransparency = 1
+    page.Visible             = false
+    page.Name                = name .. "Page"
+    page.Parent              = ContentArea
+    tabPages[name]           = page
+    return page
+end
+
+local function makeStatusLabel(parent)
+    local lbl = Instance.new("TextLabel")
+    lbl.Size                = UDim2.new(1, -16, 0, 36)
+    lbl.Position            = UDim2.new(0, 8, 0, 6)
+    lbl.BackgroundColor3    = Color3.fromRGB(28, 32, 28)
+    lbl.BackgroundTransparency = 0.3
+    lbl.Text                = "Status: Menunggu..."
+    lbl.TextColor3          = Color3.fromRGB(180, 220, 180)
+    lbl.Font                = Enum.Font.GothamSemibold
+    lbl.TextSize            = 10
+    lbl.TextWrapped         = true
+    lbl.TextXAlignment      = Enum.TextXAlignment.Center
+    lbl.Parent              = parent
+    Instance.new("UICorner", lbl).CornerRadius = UDim.new(0, 6)
+    return lbl
+end
+
+local function makeToggleBtn(parent, text, yPos, color)
+    local btn = Instance.new("TextButton")
+    btn.Size                = UDim2.new(1, -16, 0, 30)
+    btn.Position            = UDim2.new(0, 8, 0, yPos)
+    btn.BackgroundColor3    = color or Color3.fromRGB(60, 65, 70)
+    btn.Text                = text
+    btn.TextColor3          = Color3.fromRGB(240, 240, 240)
+    btn.Font                = Enum.Font.GothamBold
+    btn.TextSize            = 12
+    btn.Parent              = parent
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 7)
+    return btn
+end
+
+local function makeRadarBtn(parent, yPos)
+    local btn = makeToggleBtn(parent, "📡 RADAR: " .. (isRadarVisible and "ON" or "OFF"), yPos,
+        isRadarVisible and Color3.fromRGB(30, 130, 70) or Color3.fromRGB(60, 65, 70))
+    return btn
+end
+
+local PageMedical = makePage("Medical")
+local StatusMedical = makeStatusLabel(PageMedical)
+local BtnToggleMedical = makeToggleBtn(PageMedical, "▶  Auto-Scan Medical: OFF", 50, Color3.fromRGB(60, 65, 70))
+local BtnRadarMedical  = makeRadarBtn(PageMedical, 86)
+local BtnScanOnceMedical = makeToggleBtn(PageMedical, "⚡ Scan & Treat Now (1x)", 122, Color3.fromRGB(30, 80, 140))
+
+local MedInfoLbl = Instance.new("TextLabel")
+MedInfoLbl.Size             = UDim2.new(1, -16, 0, 48)
+MedInfoLbl.Position         = UDim2.new(0, 8, 0, 160)
+MedInfoLbl.BackgroundColor3 = Color3.fromRGB(20, 22, 28)
+MedInfoLbl.BackgroundTransparency = 0.2
+MedInfoLbl.Text             = "Rooms 1–5  ·  Medical Wing\nAuto-treat, fetch meds, anomaly killer\nNo fake Bandages detection"
+MedInfoLbl.TextColor3       = Color3.fromRGB(100, 170, 140)
+MedInfoLbl.Font             = Enum.Font.Gotham
+MedInfoLbl.TextSize         = 10
+MedInfoLbl.TextWrapped      = true
+MedInfoLbl.TextXAlignment   = Enum.TextXAlignment.Center
+MedInfoLbl.Parent           = PageMedical
+Instance.new("UICorner", MedInfoLbl).CornerRadius = UDim.new(0, 6)
+
+local PageR6 = makePage("R6")
+local StatusR6 = makeStatusLabel(PageR6)
+local BtnToggleR6   = makeToggleBtn(PageR6, "▶  Auto R6: OFF", 50, Color3.fromRGB(60, 65, 70))
+local BtnRadarR6    = makeRadarBtn(PageR6, 86)
+local BtnForceR6    = makeToggleBtn(PageR6, "⚠ Force Fail (Anti-Stuck)", 122, Color3.fromRGB(130, 80, 20))
+
+local R6InfoLbl = Instance.new("TextLabel")
+R6InfoLbl.Size              = UDim2.new(1, -16, 0, 48)
+R6InfoLbl.Position          = UDim2.new(0, 8, 0, 160)
+R6InfoLbl.BackgroundColor3  = Color3.fromRGB(20, 22, 28)
+R6InfoLbl.BackgroundTransparency = 0.2
+R6InfoLbl.Text              = "Room 6  ·  Emergency Wing\nX-Ray bypass, inject, anomaly killer\nAnti-stuck watchdog built-in"
+R6InfoLbl.TextColor3        = Color3.fromRGB(180, 100, 200)
+R6InfoLbl.Font              = Enum.Font.Gotham
+R6InfoLbl.TextSize          = 10
+R6InfoLbl.TextWrapped       = true
+R6InfoLbl.TextXAlignment    = Enum.TextXAlignment.Center
+R6InfoLbl.Parent            = PageR6
+Instance.new("UICorner", R6InfoLbl).CornerRadius = UDim.new(0, 6)
+
+local PageR7 = makePage("R7")
+local StatusR7 = makeStatusLabel(PageR7)
+local BtnToggleR7  = makeToggleBtn(PageR7, "▶  Auto R7: OFF", 50, Color3.fromRGB(60, 65, 70))
+local BtnRadarR7   = makeRadarBtn(PageR7, 86)
+
+local R7CountFrame = Instance.new("Frame")
+R7CountFrame.Size               = UDim2.new(1, -16, 0, 32)
+R7CountFrame.Position           = UDim2.new(0, 8, 0, 122)
+R7CountFrame.BackgroundColor3   = Color3.fromRGB(22, 24, 30)
+R7CountFrame.BackgroundTransparency = 0.1
+R7CountFrame.Parent             = PageR7
+Instance.new("UICorner", R7CountFrame).CornerRadius = UDim.new(0, 6)
+
+local HandLbl = Instance.new("TextLabel")
+HandLbl.Size        = UDim2.new(0.5, 0, 1, 0)
+HandLbl.BackgroundTransparency = 1
+HandLbl.Text        = "👆 Clicked: 0"
+HandLbl.TextColor3  = Color3.fromRGB(100, 200, 255)
+HandLbl.Font        = Enum.Font.GothamSemibold
+HandLbl.TextSize    = 10
+HandLbl.Parent      = R7CountFrame
+
+local SkullLbl = Instance.new("TextLabel")
+SkullLbl.Size       = UDim2.new(0.5, 0, 1, 0)
+SkullLbl.Position   = UDim2.new(0.5, 0, 0, 0)
+SkullLbl.BackgroundTransparency = 1
+SkullLbl.Text       = "💀 Skipped: 0"
+SkullLbl.TextColor3 = Color3.fromRGB(255, 100, 100)
+SkullLbl.Font       = Enum.Font.GothamSemibold
+SkullLbl.TextSize   = 10
+SkullLbl.Parent     = R7CountFrame
+
+local R7InfoLbl = Instance.new("TextLabel")
+R7InfoLbl.Size              = UDim2.new(1, -16, 0, 48)
+R7InfoLbl.Position          = UDim2.new(0, 8, 0, 162)
+R7InfoLbl.BackgroundColor3  = Color3.fromRGB(20, 22, 28)
+R7InfoLbl.BackgroundTransparency = 0.2
+R7InfoLbl.Text              = "Room 7  ·  Emergency Wing\nMinigame auto-click, bypass process\nStrict idle: stops when healing"
+R7InfoLbl.TextColor3        = Color3.fromRGB(255, 170, 80)
+R7InfoLbl.Font              = Enum.Font.Gotham
+R7InfoLbl.TextSize          = 10
+R7InfoLbl.TextWrapped       = true
+R7InfoLbl.TextXAlignment    = Enum.TextXAlignment.Center
+R7InfoLbl.Parent            = PageR7
+Instance.new("UICorner", R7InfoLbl).CornerRadius = UDim.new(0, 6)
+
+local PageR8 = makePage("R8")
+local StatusR8 = makeStatusLabel(PageR8)
+local BtnToggleR8   = makeToggleBtn(PageR8, "▶  Auto R8: OFF", 50, Color3.fromRGB(60, 65, 70))
+local BtnRadarR8    = makeRadarBtn(PageR8, 86)
+local BtnScanOnceR8 = makeToggleBtn(PageR8, "⚡ Treat Room 8 (1x)", 122, Color3.fromRGB(30, 80, 140))
+
+local R8InfoLbl = Instance.new("TextLabel")
+R8InfoLbl.Size              = UDim2.new(1, -16, 0, 48)
+R8InfoLbl.Position          = UDim2.new(0, 8, 0, 160)
+R8InfoLbl.BackgroundColor3  = Color3.fromRGB(20, 22, 28)
+R8InfoLbl.BackgroundTransparency = 0.2
+R8InfoLbl.Text              = "Room 8  ·  Emergency Surgery\nSmart Math fetch, count-sync inject\nAnomaly killer + shift watchdog"
+R8InfoLbl.TextColor3        = Color3.fromRGB(255, 100, 100)
+R8InfoLbl.Font              = Enum.Font.Gotham
+R8InfoLbl.TextSize          = 10
+R8InfoLbl.TextWrapped       = true
+R8InfoLbl.TextXAlignment    = Enum.TextXAlignment.Center
+R8InfoLbl.Parent            = PageR8
+Instance.new("UICorner", R8InfoLbl).CornerRadius = UDim.new(0, 6)
+
+local currentTab = "Medical"
+
+local function switchTab(name)
+    currentTab = name
+    for tName, page in pairs(tabPages) do
+        page.Visible = (tName == name)
+    end
+    for tName, btn in pairs(tabBtns) do
+        if tName == name then
+            btn.BackgroundColor3 = tabColors[name] or Color3.fromRGB(0, 170, 100)
+            btn.TextColor3       = Color3.fromRGB(255, 255, 255)
+        else
+            btn.BackgroundColor3 = Color3.fromRGB(26, 26, 34)
+            btn.TextColor3       = Color3.fromRGB(140, 140, 160)
+        end
+    end
+end
+
+for _, name in ipairs(tabNames) do
+    tabBtns[name].MouseButton1Click:Connect(function() switchTab(name) end)
+end
+switchTab("Medical")
+
+-- ==========================================
+-- LOGIC & UTILITIES (SHARED)
+-- ==========================================
+local function setStatus(text, target)
+    if target == "R6" then
+        if _G.LastRoom6Status == text then return end
+        _G.LastRoom6Status = text
+        StatusR6.Text = "Status: " .. text
+    elseif target == "R7" then
+        if _G.AutoRoom7_LastStatus == text then return end
+        _G.AutoRoom7_LastStatus = text
+        StatusR7.Text = "Status: " .. text
+    elseif target == "R8" then
+        StatusR8.Text = "Status: " .. text
+    else
+        if _G.LastStatus == text then return end
+        _G.LastStatus = text
+        StatusMedical.Text = "Status: " .. text
+    end
+    if Config.ShowConsoleLogs then
+        print("[" .. os.date("%H:%M:%S") .. "] [AutoDoc-" .. (target or "Med") .. "] " .. text)
+    end
+end
+
+local function unequipAll()
+    pcall(function()
+        local char = LocalPlayer.Character
+        local hum  = char and char:FindFirstChild("Humanoid")
+        if hum then
+            hum:UnequipTools()
+            local t = 0
+            while char:FindFirstChildOfClass("Tool") and t < 10 do task.wait(0.05); t = t + 1 end
+        end
+    end)
+end
+
+local function teleportToTarget(target)
+    local char = LocalPlayer.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not root or not target then return end
+    local posToTP = nil
+    if typeof(target) == "CFrame"              then posToTP = target.Position
+    elseif typeof(target) == "Vector3"         then posToTP = target
+    elseif target:IsA("BasePart")              then posToTP = target.Position
+    elseif target:IsA("Model") then
+        local p = target.PrimaryPart or target:FindFirstChildWhichIsA("BasePart", true)
+        if p then posToTP = p.Position end
+    elseif target:IsA("Attachment")            then posToTP = target.WorldPosition
+    elseif target:IsA("ProximityPrompt") then
+        local parent = target.Parent
+        if parent then
+            if parent:IsA("Attachment")       then posToTP = parent.WorldPosition
+            elseif parent:IsA("BasePart")     then posToTP = parent.Position
+            elseif parent:IsA("Model") then
+                local pt = parent.PrimaryPart or parent:FindFirstChildWhichIsA("BasePart", true)
+                if pt then posToTP = pt.Position end
+            end
+        end
+    end
+    if posToTP then
+        root.CFrame = CFrame.new(posToTP + Vector3.new(0, 3, 0))
+        root.Velocity = Vector3.zero
+        root.AssemblyLinearVelocity = Vector3.zero
+        task.wait(0.1)
+    end
+end
+
+local function teleportToIdle()
+    teleportToTarget(Config.IdleCFrame)
+end
+
+local function getShiftText()
+    local pGui = LocalPlayer:FindFirstChild("PlayerGui")
+    if pGui then
+        local shiftUI = pGui:FindFirstChild("Shift")
+        if shiftUI then
+            local frame  = shiftUI:FindFirstChild("Frame")
+            local header = frame and frame:FindFirstChild("header")
+            if header then
+                local textChild = header:FindFirstChild("text")
+                if textChild and textChild:IsA("TextLabel") then
+                    local txt = textChild.Text:gsub("^%s*(.-)%s*$", "%1")
+                    if txt ~= "" then return txt end
+                end
+                if header:IsA("TextLabel") then
+                    local txt = header.Text:gsub("^%s*(.-)%s*$", "%1")
+                    if txt ~= "" then return txt end
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function getShiftNumber()
+    local txt = getShiftText()
+    if not txt then return nil end
+    local num = txt:match("(%d+)")
+    return num and tonumber(num) or nil
+end
+
+local function processNotifText(text)
+    text = string.lower(text or "")
+    if text:match("can't carry any more") or text:match("cannot carry") then
+        local current, maxCap = text:match("%((%d+)/(%d+)%)")
+        if maxCap then
+            local limitServer = tonumber(maxCap)
+            if limitServer and limitServer > 0 and Config.MaxInventory ~= limitServer then
+                Config.MaxInventory = limitServer
+                setStatus("✅ KALIBRASI TAS: Kapasitas shift ini = " .. limitServer)
+            end
+        end
+    end
+
+    if text:match("has died") or text:match("someone died") or text:match("died in room") then
+        local roomNum = text:match("room (%d+)")
+        if roomNum then
+            roomNum = tonumber(roomNum)
+            local isAnomaly = text:match("anomaly") ~= nil
+            if isAnomaly then
+                setStatus("✅ Anomali Room " .. roomNum .. " berhasil dibunuh!")
+            else
+                setStatus("⚠️ Pasien Room " .. roomNum .. " meninggal! Clear memory...")
+            end
+            if roomNum >= 1 and roomNum <= Config.MaxRooms then
+                -- FIXED: Clear langsung saat NPC mati via notif — jangan pakai "JobDone" string
+                -- karena string tidak bisa dibedakan dari NPC baru yang masuk ke room yang sama
+                _G.AutoDoctor_RoomMemory[roomNum] = nil
+                BuggedRoomBlacklist[roomNum] = nil
+            elseif roomNum == 6 then
+                _G.ER_Memory[6] = nil
+            elseif roomNum == 7 then
+                _G.ER_Memory[7] = nil
+            elseif roomNum == 8 then
+                _G.ER_Memory[8] = nil
+            end
+        end
+    end
+end
+
+local function clearAllMedItems()
+    local char     = LocalPlayer.Character
+    local backpack = LocalPlayer:FindFirstChild("Backpack")
+    local hum      = char and char:FindFirstChild("Humanoid")
+    local root     = char and char:FindFirstChild("HumanoidRootPart")
+    if not char or not backpack or not hum or not root then return end
+
+    -- FIXED: Unequip dan tunggu lebih lama supaya server konfirmasi
+    hum:UnequipTools()
+    local unequipWait = 0
+    while char:FindFirstChildOfClass("Tool") and unequipWait < 20 do
+        task.wait(0.05); unequipWait = unequipWait + 1
+    end
+    task.wait(0.15)
+
+    local function collectMedItems()
+        local items = {}
+        local seen = {}
+        for _, item in ipairs(backpack:GetChildren()) do
+            if item:IsA("Tool") and table.find(ItemList, item.Name) and not seen[item] then
+                seen[item] = true; table.insert(items, item)
+            end
+        end
+        for _, item in ipairs(char:GetChildren()) do
+            if item:IsA("Tool") and table.find(ItemList, item.Name) and not seen[item] then
+                seen[item] = true; table.insert(items, item)
+            end
+        end
+        return items
+    end
+
+    local toTrash = collectMedItems()
+    if #toTrash == 0 then return end
+
+    setStatus("Membuang " .. #toTrash .. " sisa obat dari inventory...")
+
+    -- Cari trash prompt
+    local trashPrompt = _G.AutoDoctor_TrashCache
+    if not trashPrompt or not trashPrompt.Parent then
+        trashPrompt = nil
+        for _, desc in ipairs(workspace:GetDescendants()) do
+            if desc:IsA("ProximityPrompt") then
+                local actText = string.lower(desc.ActionText or "")
+                local objName = string.lower(desc.Parent and desc.Parent.Name or "")
+                if actText:match("trash") or actText:match("throw") or actText:match("dispose") or objName:match("trash") then
+                    _G.AutoDoctor_TrashCache = desc
+                    trashPrompt = desc
+                    break
+                end
+            end
+        end
+    end
+
+    if not trashPrompt then
+        setStatus("⚠️ Trash prompt tidak ditemukan, sisa obat tidak dibuang.")
+        return
+    end
+
+    -- Teleport ke trash sekali saja di awal
+    local trashPart = trashPrompt.Parent
+    if trashPart then
+        local pos = nil
+        if trashPart:IsA("BasePart") then pos = trashPart.Position
+        elseif trashPart:IsA("Model") then
+            local bp = trashPart.PrimaryPart or trashPart:FindFirstChildWhichIsA("BasePart")
+            if bp then pos = bp.Position end
+        elseif trashPart:IsA("Attachment") then pos = trashPart.WorldPosition end
+        if pos then
+            root.CFrame = CFrame.new(pos + Vector3.new(0, 3, 0))
+            root.Velocity = Vector3.zero
+            root.AssemblyLinearVelocity = Vector3.zero
+            task.wait(0.25)
+        end
+    end
+
+    local oldReq  = trashPrompt.RequiresLineOfSight
+    local oldDist = trashPrompt.MaxActivationDistance
+    trashPrompt.RequiresLineOfSight   = false
+    trashPrompt.MaxActivationDistance = math.huge
+    trashPrompt.HoldDuration          = 0
+
+    -- FIXED: Loop dengan verify — pastikan item benar-benar hilang sebelum lanjut
+    local MAX_PASS = 4
+    for pass = 1, MAX_PASS do
+        local currentItems = collectMedItems()
+        if #currentItems == 0 then break end
+
+        if pass > 1 then
+            setStatus("Trash pass " .. pass .. " — masih ada " .. #currentItems .. " item...")
+            task.wait(0.2)
+        end
+
+        for _, item in ipairs(currentItems) do
+            if not item or not item.Parent then continue end
+
+            -- Unequip dulu, tunggu konfirmasi
+            hum:UnequipTools()
+            local uw = 0
+            while char:FindFirstChildOfClass("Tool") and uw < 15 do
+                task.wait(0.05); uw = uw + 1
+            end
+
+            -- Equip item yang mau dibuang
+            hum:EquipTool(item)
+            local ew = 0
+            while not char:FindFirstChild(item.Name) and ew < 15 do
+                task.wait(0.05); ew = ew + 1
+            end
+            task.wait(0.05)
+
+            -- Fire trash prompt
+            if type(fireproximityprompt) == "function" then
+                fireproximityprompt(trashPrompt)
+            else
+                trashPrompt:InputHoldBegan()
+                task.wait(0.05)
+                trashPrompt:InputHoldEnded()
+            end
+
+            -- FIXED: Tunggu item benar-benar hilang dari inventory sebelum lanjut
+            local gone = false
+            local goneWait = 0
+            while goneWait < 20 do
+                task.wait(0.05); goneWait = goneWait + 1
+                local stillHere = backpack:FindFirstChild(item.Name) or char:FindFirstChild(item.Name)
+                if not stillHere then gone = true; break end
+            end
+
+            if not gone then
+                -- Item gagal dibuang — coba sekali lagi langsung
+                if type(fireproximityprompt) == "function" then
+                    fireproximityprompt(trashPrompt)
+                else
+                    trashPrompt:InputHoldBegan()
+                    task.wait(0.05)
+                    trashPrompt:InputHoldEnded()
+                end
+                task.wait(0.2)
+            end
+        end
+    end
+
+    trashPrompt.RequiresLineOfSight   = oldReq
+    trashPrompt.MaxActivationDistance = oldDist
+
+    hum:UnequipTools()
+    task.wait(0.15)
+
+    local remaining = collectMedItems()
+    if #remaining > 0 then
+        setStatus("⚠️ " .. #remaining .. " obat masih tersisa setelah " .. MAX_PASS .. " pass (server reject).")
+    else
+        setStatus("✅ Inventory bersih dari sisa obat.")
+    end
+end
+
+task.spawn(function()
+    local pGui     = LocalPlayer:WaitForChild("PlayerGui", 10)
+    if not pGui then return end
+    local notifMain = pGui:WaitForChild("Notifications", 10)
+    if not notifMain then return end
+    local notifSub  = notifMain:WaitForChild("Notifications", 10)
+    local feed      = notifSub and notifSub:WaitForChild("Feed", 10)
+    if not feed then return end
+
+    for _, child in ipairs(feed:GetChildren()) do
+        if child:IsA("TextLabel") or child:IsA("TextButton") or child:IsA("Frame") then
+            local lbl = child:IsA("Frame") and child:FindFirstChildWhichIsA("TextLabel") or child
+            if lbl and lbl:IsA("TextLabel") then processNotifText(lbl.Text) end
+        end
+    end
+
+    _G.AutoDoctor_NotifLoop = feed.ChildAdded:Connect(function(child)
+        task.wait(0.15)
+        if not child or not child.Parent then return end
+
+        if child:IsA("TextLabel") or child:IsA("TextButton") then
+            processNotifText(child.Text)
+            local conn = child:GetPropertyChangedSignal("Text"):Connect(function()
+                processNotifText(child.Text)
+            end)
+            task.delay(5, function() pcall(function() conn:Disconnect() end) end)
+        elseif child:IsA("Frame") then
+            for _, lbl in ipairs(child:GetDescendants()) do
+                if lbl:IsA("TextLabel") then processNotifText(lbl.Text) end
+            end
+            child.DescendantAdded:Connect(function(desc)
+                task.wait(0.1)
+                if desc:IsA("TextLabel") then processNotifText(desc.Text) end
+            end)
+        end
+    end)
+end)
+
+-- ==========================================
+-- INVENTORY (SHARED)
+-- ==========================================
+local function checkTotalInventory()
+    local count = 0
+    local items = {}
+    local bp    = LocalPlayer:FindFirstChild("Backpack")
+    local char  = LocalPlayer.Character
+    local function process(item)
+        if item:IsA("Tool") and table.find(ItemList, item.Name) then
+            count = count + 1; table.insert(items, item)
+        end
+    end
+    if bp   then for _, v in ipairs(bp:GetChildren())   do process(v) end end
+    if char then for _, v in ipairs(char:GetChildren()) do process(v) end end
+    return count, items
+end
+
+local function getPromptFromCache(targetName, isTrash, cacheTable, trashRef)
+    if isTrash then
+        if trashRef and trashRef.Parent then return trashRef end
+        for _, desc in ipairs(workspace:GetDescendants()) do
+            if desc:IsA("ProximityPrompt") then
+                local actText = string.lower(desc.ActionText or "")
+                local objName = string.lower(desc.Parent and desc.Parent.Name or "")
+                if actText:match("trash") or actText:match("throw") or actText:match("dispose") or objName:match("trash") then
+                    return desc
+                end
+            end
+        end
+    else
+        if cacheTable and cacheTable[targetName] and cacheTable[targetName].Parent then return cacheTable[targetName] end
+        local tLower = string.lower(targetName)
+        for _, desc in ipairs(workspace:GetDescendants()) do
+            if desc:IsA("ProximityPrompt") and desc.Enabled then
+                local pName = string.lower(desc.Parent and desc.Parent.Name or "")
+                local oText = string.lower(desc.ObjectText or "")
+                local aText = string.lower(desc.ActionText or "")
+                if pName:match(tLower) or oText:match(tLower) or aText:match(tLower) then
+                    if cacheTable then cacheTable[targetName] = desc end
+                    return desc
+                end
+            end
+        end
+    end
+    return nil
+end
+
+-- ==========================================
+-- RADAR SYSTEM (SHARED)
+-- ==========================================
+local function updateVisualRadar(id, pos, radius, color, visible)
+    if not visible then
+        if _G.AutoDoctor_Radars[id] then
+            _G.AutoDoctor_Radars[id]:Destroy()
+            _G.AutoDoctor_Radars[id] = nil
+        end
+        return
+    end
+    local radar = _G.AutoDoctor_Radars[id]
+    if not radar or not radar.Parent then
+        radar               = Instance.new("Part")
+        radar.Name          = "Radar_" .. id
+        radar.Shape         = Enum.PartType.Cylinder
+        radar.Anchored      = true
+        radar.CanCollide    = false
+        radar.CanQuery      = false
+        radar.CastShadow    = false
+        radar.Material      = Enum.Material.Neon
+        radar.Transparency  = 0.85
+        radar.Color         = color
+        radar.Parent        = workspace
+        _G.AutoDoctor_Radars[id] = radar
+    end
+    radar.Size   = Vector3.new(0.1, radius * 2, radius * 2)
+    radar.CFrame = CFrame.new(pos.X, pos.Y - 1.45, pos.Z) * CFrame.Angles(0, 0, math.rad(90))
+end
+
+_G.AutoDoctor_RadarLoop = task.spawn(function()
+    while task.wait(1) do
+        pcall(function()
+            local roomsFolder   = workspace:FindFirstChild("Rooms")
+            local medicalFolder = roomsFolder and roomsFolder:FindFirstChild("Medical")
+            if medicalFolder then
+                for i = 1, Config.MaxRooms do
+                    local room    = medicalFolder:FindFirstChild("Room" .. i)
+                    local bedPart = room and room:FindFirstChild("Minigame") and room.Minigame:FindFirstChild("Bed") and room.Minigame.Bed:FindFirstChild("InBed")
+                    local pos     = (bedPart and bedPart.Position) or (RoomCFrames[i] and RoomCFrames[i].Position)
+                    if pos then
+                        updateVisualRadar("MedRoom" .. i, pos, Config.PatientBedRadius, Color3.fromRGB(0, 255, 255), isRadarVisible)
+                    end
+                end
+            end
+            local emergFolder = roomsFolder and roomsFolder:FindFirstChild("Emergency")
+            if emergFolder then
+                local r6 = emergFolder:FindFirstChild("Room6")
+                if r6 then updateVisualRadar("ER6", EmergencyCFrames[6].Patient.Position, EmergencyCFrames[6].Radius, Color3.fromRGB(255, 100, 200), isRadarVisible) end
+                local r7 = emergFolder:FindFirstChild("Room7")
+                local r7bed = r7 and r7:FindFirstChild("Minigame") and r7.Minigame:FindFirstChild("Bed") and r7.Minigame.Bed:FindFirstChild("InBed")
+                if r7bed then
+                    local p = r7bed:IsA("BasePart") and r7bed or r7bed:FindFirstChildWhichIsA("BasePart")
+                    if p then updateVisualRadar("ER7", p.Position, EmergencyCFrames[7].Radius, Color3.fromRGB(255, 150, 0), isRadarVisible) end
+                end
+                local r8 = emergFolder:FindFirstChild("Room8")
+                if r8 then updateVisualRadar("ER8", EmergencyCFrames[8].Bed.Position, EmergencyCFrames[8].Radius, Color3.fromRGB(255, 80, 80), isRadarVisible) end
+            end
+        end)
+    end
+end)
+
+-- ==========================================
+-- MEDICAL (R1-5)
+-- ==========================================
+local function turboSafeEquip(itemName)
+    local char    = LocalPlayer.Character
+    local backpack = LocalPlayer:FindFirstChild("Backpack")
+    local hum     = char and char:FindFirstChild("Humanoid")
+    if not char or not backpack or not hum then return false end
+    if char:FindFirstChild(itemName) then return true end
+    hum:UnequipTools()
+    local t1 = 0
+    while char:FindFirstChildOfClass("Tool") and t1 < 10 do task.wait(0.05); t1 = t1 + 1 end
+    local tool = backpack:FindFirstChild(itemName) or char:FindFirstChild(itemName)
+    if not tool then return false end
+    hum:EquipTool(tool)
+    local t2 = 0
+    while not char:FindFirstChild(itemName) and t2 < 15 do task.wait(0.05); t2 = t2 + 1 end
+    task.wait(0.1)
+    return char:FindFirstChild(itemName) ~= nil
+end
+
+local function trashItem_Med(toolToTrash)
+    local char = LocalPlayer.Character
+    if not char then return false end
+    InventoryMutex:lock("Med-trash")
+    local trashPrompt = getPromptFromCache("Trash", true, nil, _G.AutoDoctor_TrashCache)
+    if not trashPrompt then
+        for _, desc in ipairs(workspace:GetDescendants()) do
+            if desc:IsA("ProximityPrompt") then
+                local actText = string.lower(desc.ActionText or "")
+                local objName = string.lower(desc.Parent and desc.Parent.Name or "")
+                if actText:match("trash") or actText:match("throw") or actText:match("dispose") or objName:match("trash") then
+                    _G.AutoDoctor_TrashCache = desc
+                    trashPrompt = desc
+                    break
+                end
+            end
+        end
+    else
+        _G.AutoDoctor_TrashCache = trashPrompt
+    end
+    if trashPrompt then
+        setStatus("Membuang item (Turbo): " .. toolToTrash.Name)
+        teleportToTarget(trashPrompt)
+        if turboSafeEquip(toolToTrash.Name) then
+            local oldReq  = trashPrompt.RequiresLineOfSight
+            local oldDist = trashPrompt.MaxActivationDistance
+            trashPrompt.RequiresLineOfSight = false
+            trashPrompt.MaxActivationDistance = math.huge
+            trashPrompt.HoldDuration = 0
+            if type(fireproximityprompt) == "function" then fireproximityprompt(trashPrompt)
+            else trashPrompt:InputHoldBegan() task.wait(0.05) trashPrompt:InputHoldEnded() end
+            trashPrompt.RequiresLineOfSight   = oldReq
+            trashPrompt.MaxActivationDistance = oldDist
+            _G.AutoDoctor_LastActionTick = tick()
+            task.wait(0.1)
+            InventoryMutex:unlock("Med-trash")
+            return true
+        end
+    end
+    setStatus("GAGAL: Tempat sampah tidak ditemukan!")
+    InventoryMutex:unlock("Med-trash")
+    return false
+end
+
+local function fetchItem_Med(targetName, pendingMedsList)
+    local char = LocalPlayer.Character
+    if not char then return false end
+    InventoryMutex:lock("Med-fetch")
+    setStatus("Mengambil (Insta-Fetch): " .. targetName)
+    local totalAmount, currentItems = checkTotalInventory()
+    if totalAmount >= Config.MaxInventory then
+        local itemToThrowAway = nil
+        if pendingMedsList then
+            local reqCounts = {}
+            for _, o in ipairs(pendingMedsList) do reqCounts[o] = (reqCounts[o] or 0) + 1 end
+            local haveCounts = {}
+            for _, item in ipairs(currentItems) do
+                haveCounts[item.Name] = (haveCounts[item.Name] or 0) + 1
+            end
+            for _, item in ipairs(currentItems) do
+                local needed = reqCounts[item.Name] or 0
+                local have   = haveCounts[item.Name] or 0
+                if needed == 0 or have > needed then
+                    itemToThrowAway = item; break
+                end
+            end
+        end
+        if not itemToThrowAway then itemToThrowAway = currentItems[1] end
+        local trashed = trashItem_Med(itemToThrowAway)
+        if not trashed then InventoryMutex:unlock("Med-fetch"); return false end
+    end
+    local promptToUse = getPromptFromCache(targetName, false, _G.AutoDoctor_ItemCache, nil)
+    if promptToUse then
+        unequipAll()
+        teleportToTarget(promptToUse)
+        local oldReq  = promptToUse.RequiresLineOfSight
+        local oldDist = promptToUse.MaxActivationDistance
+        local oldHold = promptToUse.HoldDuration
+        promptToUse.RequiresLineOfSight   = false
+        promptToUse.MaxActivationDistance = math.huge
+        promptToUse.HoldDuration          = 0
+        local gotItem = false
+        for retry = 1, 15 do
+            if type(fireproximityprompt) == "function" then fireproximityprompt(promptToUse)
+            else promptToUse:InputHoldBegan() task.wait(0.05) promptToUse:InputHoldEnded() end
+            task.wait(0.1)
+            if LocalPlayer.Backpack:FindFirstChild(targetName) or LocalPlayer.Character:FindFirstChild(targetName) then
+                gotItem = true; break
+            end
+        end
+        promptToUse.RequiresLineOfSight   = oldReq
+        promptToUse.MaxActivationDistance = oldDist
+        promptToUse.HoldDuration          = oldHold
+        if gotItem then
+            setStatus("Berhasil Mengambil: " .. targetName)
+            _G.AutoDoctor_LastActionTick = tick()
+            InventoryMutex:unlock("Med-fetch")
+            return true
+        else
+            setStatus("GAGAL Mengambil: " .. targetName)
+            InventoryMutex:unlock("Med-fetch")
+            return false
+        end
+    end
+    setStatus("GAGAL: " .. targetName .. " tidak ditemukan.")
+    InventoryMutex:unlock("Med-fetch")
+    return false
+end
+
+local function simpleInteract_Med(prompt, customHold, autoLock)
+    if prompt and prompt:IsA("ProximityPrompt") then
+        if autoLock then teleportToTarget(prompt) end
+        local oldReq  = prompt.RequiresLineOfSight
+        local oldDist = prompt.MaxActivationDistance
+        prompt.RequiresLineOfSight   = false
+        prompt.MaxActivationDistance = math.huge
+        if type(fireproximityprompt) == "function" then fireproximityprompt(prompt)
+        else
+            prompt:InputHoldBegan()
+            task.wait(customHold or prompt.HoldDuration or 0.1)
+            prompt:InputHoldEnded()
+        end
+        _G.AutoDoctor_LastActionTick = tick()
+        prompt.RequiresLineOfSight   = oldReq
+        prompt.MaxActivationDistance = oldDist
+        task.wait(0.1)
+    end
+    return true
+end
+
+local function teleportToRoomCenter(roomNum, roomPath)
+    if RoomCFrames[roomNum] then teleportToTarget(RoomCFrames[roomNum])
+    elseif roomPath then
+        local bed = roomPath:FindFirstChild("Minigame") and roomPath.Minigame:FindFirstChild("Bed")
+        if bed then teleportToTarget(bed) else teleportToTarget(roomPath) end
+    end
+end
+
+local function getPendingMedicines(tvUI)
+    local pending = {}
+    if not tvUI then return pending end
+    local invFolder = tvUI:FindFirstChild("inv", true)
+    if not invFolder then return pending end
+    for _, itemReq in ipairs(invFolder:GetChildren()) do
+        if table.find(ItemList, itemReq.Name) then
+            local checkMark = itemReq:FindFirstChild("check")
+            if not checkMark or (checkMark and checkMark.Visible == false) then
+                table.insert(pending, itemReq.Name)
+            end
+        end
+    end
+    return pending
+end
+
+local function getPromptsNearBed(roomPath, bedPart)
+    local prompts = {}
+    if not roomPath or not bedPart then return prompts end
+    local minigame = roomPath:FindFirstChild("Minigame")
+    if minigame then
+        for _, desc in ipairs(minigame:GetDescendants()) do
+            if desc:IsA("ProximityPrompt") and desc.Enabled then table.insert(prompts, desc) end
+        end
+    end
+    if workspace:FindFirstChild("NPCs") then
+        for _, npc in ipairs(workspace.NPCs:GetChildren()) do
+            local p = npc.PrimaryPart or npc:FindFirstChildWhichIsA("BasePart")
+            if p and (p.Position - bedPart.Position).Magnitude <= Config.PatientBedRadius then
+                for _, desc in ipairs(npc:GetDescendants()) do
+                    if desc:IsA("ProximityPrompt") and desc.Enabled then table.insert(prompts, desc) end
+                end
+            end
+        end
+    end
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local p = player.Character.PrimaryPart or player.Character:FindFirstChildWhichIsA("BasePart")
+            if p and (p.Position - bedPart.Position).Magnitude <= Config.PatientBedRadius then
+                for _, desc in ipairs(player.Character:GetDescendants()) do
+                    if desc:IsA("ProximityPrompt") and desc.Enabled then table.insert(prompts, desc) end
+                end
+            end
+        end
+    end
+    return prompts
+end
+
+local function isPatientReady(roomPath, bedPart)
+    local minigame = roomPath:FindFirstChild("Minigame")
+    local tvUI     = minigame and minigame:FindFirstChild("TV") and minigame.TV:FindFirstChild("Screen", true)
+    local pending  = getPendingMedicines(tvUI)
+    if #pending > 0 then return true, "TV Aktif (Butuh Obat)" end
+    local prompts = getPromptsNearBed(roomPath, bedPart)
+    for _, desc in ipairs(prompts) do
+        local actText = string.lower(desc.ActionText or "")
+        local name    = string.lower(desc.Name or "")
+        if actText:match("inspect") then
+        elseif actText:match("dna") or name:match("dna") then return true, "Tombol DNA"
+        elseif actText:match("burns") or name == "firepp" then return true, "Tombol Luka Bakar"
+        elseif actText:match("analyze") or actText:match("process") or name:match("analyze") then return true, "Mesin Lab"
+        end
+    end
+    return false, "Kosong/Healing"
+end
+
+local function getPatientInRoom_Med(roomNum, roomPath)
+    local bedPart  = roomPath and roomPath:FindFirstChild("Minigame") and roomPath.Minigame:FindFirstChild("Bed") and roomPath.Minigame.Bed:FindFirstChild("InBed")
+    local centerPos = (bedPart and bedPart.Position) or (RoomCFrames[roomNum] and RoomCFrames[roomNum].Position)
+    if not centerPos and roomPath and roomPath.PrimaryPart then centerPos = roomPath.PrimaryPart.Position end
+    if not centerPos then return nil end
+    local radius = Config.PatientBedRadius
+    local function checkNPC(obj)
+        if Players:GetPlayerFromCharacter(obj) then return nil end
+        if not obj:IsA("Model") then return nil end
+        local part = obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")
+        if not part or (part.Position - centerPos).Magnitude > radius then return nil end
+        for _, pp in ipairs(obj:GetDescendants()) do
+            if pp:IsA("ProximityPrompt") then
+                local txt  = string.lower(pp.ActionText or "")
+                local name = string.lower(pp.Name or "")
+                if txt:match("dna") or txt:match("treat") or name == "firepp"
+                or txt:match("burns") or txt:match("inject") then
+                    return obj
+                end
+            end
+        end
+        if obj:FindFirstChildOfClass("Humanoid") then return obj end
+        return nil
+    end
+    if workspace:FindFirstChild("NPCs") then
+        for _, npc in ipairs(workspace.NPCs:GetChildren()) do
+            local found = checkNPC(npc)
+            if found then return found end
+        end
+    end
+    for _, obj in ipairs(workspace:GetChildren()) do
+        if obj:IsA("Model") and obj ~= LocalPlayer.Character and obj.Name ~= "Rooms" and obj.Name ~= "Misc" then
+            local found = checkNPC(obj)
+            if found then return found end
+        end
+    end
+    return nil
+end
+
+local function isRoomDone_Med(roomNum, minigame, roomPath, bedPart, currentPatient)
+    if not minigame then return false end
+    if roomPath and bedPart then
+        local ready, reason = isPatientReady(roomPath, bedPart)
+        if ready and reason == "Tombol Luka Bakar" then return false end
+    end
+    if currentPatient then
+        if currentPatient:FindFirstChild("PE", true)   then return false end
+        if currentPatient:FindFirstChild("Heal", true) then return true end
+    end
+    local tv     = minigame:FindFirstChild("TV")
+    local screen = tv and tv:FindFirstChild("Screen")
+    local ui     = screen and screen:FindFirstChild("UI")
+    if ui and ui:IsA("SurfaceGui") and ui.Enabled and ui:FindFirstChild("inv", true) then
+        local invFolder  = ui:FindFirstChild("inv", true)
+        local totalItems = 0
+        for _, itemReq in ipairs(invFolder:GetChildren()) do
+            if table.find(ItemList, itemReq.Name) then totalItems = totalItems + 1 end
+        end
+        local pending = getPendingMedicines(ui)
+        if totalItems > 0 and #pending == 0 then return true end
+    end
+    return false
+end
+
+local function checkAnomalyStatus_Med(bedPart, specificNPC)
+    if specificNPC then
+        local attr = specificNPC:GetAttributes()
+        if attr.Skinwalker or attr.SkinwalkerEasy or attr.PenaltyWhenLettingIn
+        or attr.PhotoEffect == "CursedPhoto" or attr.PhotoEffect2 == "CursedPhoto" then
+            return true
+        end
+        return false
+    end
+    if not bedPart then return false end
+    if workspace:FindFirstChild("NPCs") then
+        for _, npc in ipairs(workspace.NPCs:GetChildren()) do
+            local p = npc.PrimaryPart or npc:FindFirstChildWhichIsA("BasePart")
+            if p and (p.Position - bedPart.Position).Magnitude <= Config.PatientBedRadius then
+                local attr = npc:GetAttributes()
+                if attr.Skinwalker or attr.SkinwalkerEasy or attr.PenaltyWhenLettingIn
+                or attr.PhotoEffect == "CursedPhoto" or attr.PhotoEffect2 == "CursedPhoto" then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+local function findActiveRoom_Med()
+    local roomsFolder   = workspace:FindFirstChild("Rooms")
+    local medicalFolder = roomsFolder and roomsFolder:FindFirstChild("Medical")
+    if not medicalFolder then return nil, nil end
+
+    local lightRedRooms = {}
+
+    for i = 1, Config.MaxRooms do
+        local room     = medicalFolder:FindFirstChild("Room" .. i)
+        if room then
+            local minigame = room:FindFirstChild("Minigame")
+            local bed      = minigame and minigame:FindFirstChild("Bed") and minigame.Bed:FindFirstChild("InBed")
+            local currentPatient = getPatientInRoom_Med(i, room)
+            local mem = _G.AutoDoctor_RoomMemory[i]
+
+            -- ==========================================
+            -- FIXED: Memory validation — handle semua tipe
+            -- Sebelumnya "JobDone" string tidak pernah di-clear
+            -- kalau NPC baru dateng ke room yang sama
+            -- ==========================================
+            if mem then
+                if not currentPatient then
+                    -- Room kosong, clear memory
+                    _G.AutoDoctor_RoomMemory[i] = nil
+                elseif mem == "JobDone" then
+                    -- *** KEY FIX: NPC baru datang setelah pasien lama selesai
+                    -- Clear JobDone memory supaya room bisa diproses lagi
+                    if Config.ShowConsoleLogs then
+                        print("[Scan] Room" .. i .. ": Clear JobDone memory — NPC baru terdeteksi")
+                    end
+                    _G.AutoDoctor_RoomMemory[i] = nil
+                elseif typeof(mem) == "Instance" then
+                    if currentPatient ~= mem then
+                        -- NPC berbeda, clear
+                        _G.AutoDoctor_RoomMemory[i] = nil
+                    elseif currentPatient:FindFirstChild("PE", true) then
+                        -- NPC sama tapi ada PE (bisa diobati lagi)
+                        _G.AutoDoctor_RoomMemory[i] = nil
+                    end
+                    -- else: NPC sama, tidak ada PE — memory valid, skip room
+                else
+                    -- Unknown memory type, clear aja
+                    _G.AutoDoctor_RoomMemory[i] = nil
+                end
+            end
+
+            local isBlacklisted = BuggedRoomBlacklist[i] and (tick() - BuggedRoomBlacklist[i] < Config.BlacklistDuration)
+            if isBlacklisted and currentPatient then
+                BuggedRoomBlacklist[i] = nil
+                isBlacklisted = false
+            end
+
+            -- Diagnostic: log kenapa room di-skip (hanya saat idle stuck)
+            if isBlacklisted then
+                if Config.ShowConsoleLogs then
+                    print("[Scan] Room" .. i .. ": SKIP — blacklist (sisa " .. math.floor(Config.BlacklistDuration - (tick() - BuggedRoomBlacklist[i])) .. "s)")
+                end
+                continue
+            end
+            if _G.AutoDoctor_RoomMemory[i] then
+                if Config.ShowConsoleLogs then
+                    local memVal = _G.AutoDoctor_RoomMemory[i]
+                    print("[Scan] Room" .. i .. ": SKIP — memory=" .. tostring(typeof(memVal) == "Instance" and memVal.Name or memVal))
+                end
+                continue
+            end
+
+            if currentPatient then
+                local ready, reason = isPatientReady(room, bed)
+                if ready then
+                    if Config.ShowConsoleLogs then
+                        print("[Scan] Room" .. i .. ": AKTIF — " .. tostring(reason))
+                    end
+                    return room, i
+                else
+                    if Config.ShowConsoleLogs then
+                        print("[Scan] Room" .. i .. ": NPC ada tapi not ready — " .. tostring(reason))
+                    end
+                end
+            end
+            local tvUI    = minigame and minigame:FindFirstChild("TV") and minigame.TV:FindFirstChild("Screen", true)
+            local pending = getPendingMedicines(tvUI)
+            if #pending > 0 then
+                if Config.ShowConsoleLogs then
+                    print("[Scan] Room" .. i .. ": AKTIF — TV pending " .. #pending .. " obat")
+                end
+                return room, i
+            end
+            local signLight  = room:FindFirstChild("MainSign") and room.MainSign:FindFirstChild("Light")
+            local isLightRed = signLight and (signLight.BrickColor.Name == "Crimson" or signLight.Color == Color3.fromRGB(165, 0, 0))
+            if isLightRed and not currentPatient then
+                table.insert(lightRedRooms, i)
+            end
+        end
+    end
+
+    if Config.ShowConsoleLogs and #lightRedRooms > 0 then
+        print("[Scan] Lampu merah (tunggu pasien): Room " .. table.concat(lightRedRooms, ", "))
+    end
+
+    return nil, nil
+end
+
+local function getFireEmergency_Med()
+    if workspace:FindFirstChild("NPCs") then
+        for _, npc in ipairs(workspace.NPCs:GetChildren()) do
+            local pp = npc:FindFirstChild("FirePP", true)
+            if pp and pp.ActionText and pp.ActionText:match("Fire") then return npc, pp end
+        end
+    end
+    return nil, nil
+end
+
+local function getPlacePatientPrompt_Med()
+    local roomsFolder = workspace:FindFirstChild("Rooms")
+    if not roomsFolder then return nil, nil, nil, nil end
+    local medicalFolder = roomsFolder:FindFirstChild("Medical")
+    if medicalFolder then
+        for i = 1, Config.MaxRooms do
+            local room = medicalFolder:FindFirstChild("Room" .. i)
+            if room then
+                for _, desc in ipairs(room:GetDescendants()) do
+                    if desc:IsA("ProximityPrompt") and desc.Enabled then
+                        local actText = string.lower(desc.ActionText or "")
+                        if actText:match("place") then return desc, room.Name, i, room end
+                    end
+                end
+            end
+        end
+    end
+    return nil, nil, nil, nil
+end
+
+local function getFaintedPatient_Med()
+    if workspace:FindFirstChild("NPCs") then
+        for _, npc in ipairs(workspace.NPCs:GetChildren()) do
+            local pp = npc:FindFirstChild("FaintedPP", true) or npc:FindFirstChildWhichIsA("ProximityPrompt", true)
+            if pp and (pp.Name == "FaintedPP" or (pp.ActionText and pp.ActionText:match("Carry"))) then return npc, pp end
+        end
+    end
+    return nil, nil
+end
+
+local function processFaintedPatient_Med(faintedNPC, carryPP, activeShift)
+    setStatus("! P2: Menggendong Pasien Pingsan !")
+    unequipAll()
+    if not faintedNPC or not faintedNPC.Parent then return end
+    local npcPart = faintedNPC.PrimaryPart or faintedNPC:FindFirstChildWhichIsA("BasePart")
+    if not npcPart then return end
+    local function getFreshCarryPP()
+        if not faintedNPC or not faintedNPC.Parent then return nil end
+        local pp = faintedNPC:FindFirstChild("FaintedPP", true)
+        if pp and pp:IsA("ProximityPrompt") and pp.Enabled then return pp end
+        for _, p in ipairs(faintedNPC:GetDescendants()) do
+            if p:IsA("ProximityPrompt") and p.Enabled and
+               (p.Name == "FaintedPP" or (p.ActionText and p.ActionText:match("Carry"))) then
+                return p
+            end
+        end
+        return nil
+    end
+    local function isBeingCarried()
+        return (getFreshCarryPP() == nil)
+    end
+    for attempt = 1, 5 do
+        local pp = getFreshCarryPP() or carryPP
+        if pp and pp.Parent and pp.Enabled then
+            npcPart = faintedNPC.PrimaryPart or faintedNPC:FindFirstChildWhichIsA("BasePart")
+            if npcPart then teleportToTarget(npcPart); task.wait(0.3) end
+            simpleInteract_Med(pp, 0, false)
+            task.wait(1)
+        end
+        if isBeingCarried() then break end
+        task.wait(0.3)
+    end
+    setStatus("P2: Membawa pasien ke kasur...")
+    local waitCount = 0
+    local MAX_WAIT  = 60
+    while waitCount < MAX_WAIT do
+        if getShiftText() ~= activeShift then
+            setStatus("Shift berganti saat gendong pasien!"); return
+        end
+        _G.AutoDoctor_LastActionTick = tick()
+        if not faintedNPC or not faintedNPC.Parent then
+            setStatus("✅ Pasien sudah ditempatkan (NPC hilang)"); return
+        end
+        local freshCarry = getFreshCarryPP()
+        if freshCarry and freshCarry.Enabled then
+            setStatus("P2: Re-carry pasien (terinterupsi game)...")
+            npcPart = faintedNPC.PrimaryPart or faintedNPC:FindFirstChildWhichIsA("BasePart")
+            if npcPart then teleportToTarget(npcPart); task.wait(0.3) end
+            simpleInteract_Med(freshCarry, 0, false)
+            task.wait(1)
+        end
+-- Scan luas: room structure DAN NPC yang digendong DAN workspace global
+        local placePrompt, targetRoomName, targetRoomNum, targetRoomPath = getPlacePatientPrompt_Med()
+
+        -- Fallback: scan workspace luas kalau getPlacePatientPrompt_Med miss
+        if not placePrompt then
+            for _, desc in ipairs(workspace:GetDescendants()) do
+                if desc:IsA("ProximityPrompt") and desc.Enabled then
+                    local actText = string.lower(desc.ActionText or "")
+                    local objText = string.lower(desc.ObjectText or "")
+                    if actText:match("place") or objText:match("place") or actText:match("put") then
+                        placePrompt = desc
+                        -- Cari room number dari parent hierarchy
+                        local ancestor = desc.Parent
+                        for _ = 1, 6 do
+                            if not ancestor then break end
+                            local n = ancestor.Name:match("Room(%d+)")
+                            if n then
+                                targetRoomNum  = tonumber(n)
+                                targetRoomName = ancestor.Name
+                                targetRoomPath = ancestor
+                                break
+                            end
+                            ancestor = ancestor.Parent
+                        end
+                        break
+                    end
+                end
+            end
+        end
+
+        if placePrompt then
+            setStatus("P2: Menaruh di " .. tostring(targetRoomName or "kasur") .. "...")
+            if targetRoomNum and targetRoomPath then
+                teleportToRoomCenter(targetRoomNum, targetRoomPath)
+            else
+                teleportToTarget(placePrompt)
+            end
+            task.wait(0.3)
+            simpleInteract_Med(placePrompt, 1, false)
+            task.wait(1)
+            if not placePrompt.Parent or not placePrompt.Enabled then
+                setStatus("✅ Pasien berhasil ditempatkan di " .. tostring(targetRoomName or "kasur"))
+                return
+            end
+            if not faintedNPC or not faintedNPC.Parent then
+                setStatus("✅ Pasien sudah ditempatkan"); return
+            end
+        else
+            setStatus("P2: Menunggu kasur kosong... (" .. waitCount .. "s)")
+        end
+        task.wait(1)
+        waitCount = waitCount + 1
+    end
+    setStatus("GAGAL letakkan pasien setelah " .. MAX_WAIT .. "s.")
+end
+
+local function executeTreatmentCore_Med(roomPath, roomNum, activeShift)
+    local minigame = roomPath:FindFirstChild("Minigame")
+    if not minigame then return end
+    local bed = minigame:FindFirstChild("Bed") and minigame.Bed:FindFirstChild("InBed")
+    setStatus("--- MEMULAI PENGOBATAN: " .. roomPath.Name .. " ---")
+    teleportToRoomCenter(roomNum, roomPath)
+    local lastProgressTime = tick()
+    local waitingForPatientSince = nil
+    local MAX_PATIENT_WAIT = Config.MAX_PATIENT_WAIT
+
+    while true do
+        task.wait(0.1)
+        if getShiftText() ~= activeShift then setStatus("Shift berganti!"); clearAllMedItems(); break end
+        if getFireEmergency_Med() or getPlacePatientPrompt_Med() then setStatus("INTERUPSI DARURAT!"); break end
+
+        local currentPatient = getPatientInRoom_Med(roomNum, roomPath)
+        if not currentPatient then
+            local signLight  = roomPath:FindFirstChild("MainSign") and roomPath.MainSign:FindFirstChild("Light")
+            local isLightRed = signLight and (signLight.BrickColor.Name == "Crimson" or signLight.Color == Color3.fromRGB(165, 0, 0))
+            local tvUI2   = minigame:FindFirstChild("TV") and minigame.TV:FindFirstChild("Screen", true)
+            local pending2 = getPendingMedicines(tvUI2)
+            if #pending2 > 0 then
+                if not waitingForPatientSince then waitingForPatientSince = tick() end
+                if tick() - waitingForPatientSince > MAX_PATIENT_WAIT then
+                    setStatus("Timeout tunggu NPC prompt. Skip.")
+                    BuggedRoomBlacklist[roomNum] = tick(); break
+                end
+                setStatus("Menunggu NPC prompt muncul..."); task.wait(0.5); continue
+            end
+            if isLightRed then
+                if not waitingForPatientSince then waitingForPatientSince = tick() end
+                if tick() - waitingForPatientSince > MAX_PATIENT_WAIT then
+                    setStatus("Pasien tidak kunjung datang. Kembali idle.")
+                    BuggedRoomBlacklist[roomNum] = tick(); break
+                end
+                setStatus("Pasien menuju kasur... (" .. math.floor(MAX_PATIENT_WAIT - (tick() - waitingForPatientSince)) .. "s)")
+                task.wait(0.5); continue
+            else
+                setStatus("Kamar kosong! Skip.")
+                BuggedRoomBlacklist[roomNum] = tick(); break
+            end
+        else
+            waitingForPatientSince = nil
+        end
+        if isRoomDone_Med(roomNum, minigame, roomPath, bed, currentPatient) then
+            setStatus("Pengobatan Selesai!")
+            -- FIXED: Selalu set ke NPC Instance (bukan string "JobDone")
+            -- Supaya kalau NPC baru datang ke room yang sama, memory bisa di-clear
+            -- dengan deteksi NPC ~= mem. String "JobDone" tidak bisa dibedakan dari NPC baru.
+            if currentPatient and currentPatient.Parent then
+                _G.AutoDoctor_RoomMemory[roomNum] = currentPatient
+            else
+                -- Fallback: tidak ada NPC reference, clear langsung — jangan block room
+                _G.AutoDoctor_RoomMemory[roomNum] = nil
+            end
+            clearAllMedItems()
+            break
+        end
+        if tick() - lastProgressTime >= Config.StuckTimeout then
+            setStatus("Timeout! Skip ruangan.")
+            BuggedRoomBlacklist[roomNum] = tick()
+            clearAllMedItems()
+            break
+        end
+        local tvUI      = minigame:FindFirstChild("TV") and minigame.TV:FindFirstChild("Screen", true)
+        local hasTasks, reason = isPatientReady(roomPath, bed)
+        if hasTasks then
+            if reason == "TV Aktif (Butuh Obat)" then
+                local patientIsAnomaly = Config.AnomalyKiller and checkAnomalyStatus_Med(bed, currentPatient)
+                if patientIsAnomaly then
+                    local prescribedMeds = {}
+                    local tvInv = tvUI and tvUI:FindFirstChild("inv", true)
+                    if tvInv then
+                        for _, req in ipairs(tvInv:GetChildren()) do
+                            if table.find(ItemList, req.Name) then table.insert(prescribedMeds, req.Name) end
+                        end
+                    end
+                    setStatus("!! ANOMALI Med Room " .. roomNum .. " — Menyiapkan racun !!")
+                    local wrongMedicine = findAndFetchWrongMedicine(prescribedMeds, fetchItem_Med, "Med")
+                    if wrongMedicine and bed and bed:FindFirstChild("PP") then
+                        teleportToTarget(bed:FindFirstChild("PP").Parent)
+                        if turboSafeEquip(wrongMedicine) then
+                            local activeTool = LocalPlayer.Character:FindFirstChildOfClass("Tool")
+                            if activeTool and activeTool.Name == wrongMedicine then
+                                -- FIXED: Pakai NPC instance, bukan string "JobDone"
+                                _G.AutoDoctor_RoomMemory[roomNum] = (currentPatient and currentPatient.Parent) and currentPatient or nil
+                                setStatus("MENYUNTIKKAN RACUN: " .. wrongMedicine)
+                                simpleInteract_Med(bed.PP, 0.1, false)
+                                lastProgressTime = tick()
+                                task.wait(2)
+                                setStatus("--- ANOMALI HANGUS! ---")
+                                clearAllMedItems()
+                                break
+                            end
+                        end
+                    elseif wrongMedicine == nil then
+                        setStatus("Semua kandidat racun habis stok! Tunggu...")
+                        task.wait(2)
+                    end
+                else
+                    local currentPending = getPendingMedicines(tvUI)
+                    for _, obat in ipairs(currentPending) do
+                        local hasIt = LocalPlayer.Backpack:FindFirstChild(obat) or LocalPlayer.Character:FindFirstChild(obat)
+                        if not hasIt then
+                            local totalCount, currentItems = checkTotalInventory()
+                            local hasTrash = false
+                            for _, item in ipairs(currentItems) do
+                                if not table.find(currentPending, item.Name) then
+                                    hasTrash = true; break
+                                end
+                            end
+                            if totalCount < Config.MaxInventory or hasTrash then
+                                fetchItem_Med(obat, currentPending)
+                                task.wait(0.1)
+                            end
+                        end
+                    end
+                    local medsWeHaveAndNeed = {}
+                    currentPending = getPendingMedicines(tvUI)
+                    for _, obat in ipairs(currentPending) do
+                        if LocalPlayer.Backpack:FindFirstChild(obat) or LocalPlayer.Character:FindFirstChild(obat) then
+                            table.insert(medsWeHaveAndNeed, obat)
+                        end
+                    end
+                    if #medsWeHaveAndNeed > 0 then
+                        local obatToInject = medsWeHaveAndNeed[1]
+                        if bed and bed:FindFirstChild("PP") then
+                            teleportToTarget(bed:FindFirstChild("PP").Parent)
+                            if turboSafeEquip(obatToInject) then
+                                local activeTool = LocalPlayer.Character:FindFirstChildOfClass("Tool")
+                                if activeTool and activeTool.Name == obatToInject then
+                                    setStatus("Suntik: " .. obatToInject)
+                                    simpleInteract_Med(bed.PP, 0.1, false)
+                                    lastProgressTime = tick()
+                                    task.wait(Config.InjectionDelay)
+                                end
+                            end
+                        end
+                    else
+                        setStatus("Menunggu obat terisi...")
+                        task.wait(0.5)
+                    end
+                end
+            else
+                local acted = false
+                local prompts = getPromptsNearBed(roomPath, bed)
+                local handledBurn = false
+                for _, desc in ipairs(prompts) do
+                    local actText = string.lower(desc.ActionText or "")
+                    local name    = string.lower(desc.Name or "")
+                    if name == "firepp" or actText:match("burns") then
+                        local hasOintment = LocalPlayer.Backpack:FindFirstChild("Ointment") or LocalPlayer.Character:FindFirstChild("Ointment")
+                        if not hasOintment then
+                            local s = fetchItem_Med("Ointment", {"Ointment"})
+                            hasOintment = s and (LocalPlayer.Backpack:FindFirstChild("Ointment") or LocalPlayer.Character:FindFirstChild("Ointment"))
+                        end
+                        if hasOintment then
+                            teleportToTarget(desc.Parent)
+                            if turboSafeEquip("Ointment") then
+                                local activeTool = LocalPlayer.Character:FindFirstChildOfClass("Tool")
+                                if activeTool and activeTool.Name == "Ointment" then
+                                    setStatus("Mengoleskan Ointment...")
+                                    simpleInteract_Med(desc, 3, false)
+                                    acted = true; handledBurn = true; break
+                                end
+                            end
+                        end
+                    end
+                end
+                if not handledBurn then
+                    local monitor   = minigame:FindFirstChild("Monitor")
+                    local pp2_obj   = monitor and monitor:FindFirstChild("PP2")
+                    local actualPP2 = nil
+                    if pp2_obj then
+                        actualPP2 = pp2_obj:IsA("ProximityPrompt") and pp2_obj or pp2_obj:FindFirstChildOfClass("ProximityPrompt")
+                    end
+                    if actualPP2 then
+                        local monitorScreen = monitor:FindFirstChild("Screen")
+                        local monitorUI     = monitorScreen and monitorScreen:FindFirstChild("UI")
+                        local isMonitorBusy = false
+                        if monitorUI and (monitorUI.Enabled or (monitorUI:FindFirstChild("Report") and monitorUI.Report.Visible)) then isMonitorBusy = true end
+                        if monitorScreen then
+                            for _, desc in ipairs(monitorScreen:GetDescendants()) do
+                                if desc:IsA("TextLabel") and desc.Name == "header" and string.match(desc.Text, "Finalizing") then isMonitorBusy = true; break end
+                            end
+                        end
+                        local tvScreen    = minigame:FindFirstChild("TV") and minigame.TV:FindFirstChild("Screen")
+                        local activeTvUI  = tvScreen and tvScreen:FindFirstChild("UI")
+                        local isTVBusy    = activeTvUI and activeTvUI:IsA("SurfaceGui") and activeTvUI.Enabled
+                        if isMonitorBusy or isTVBusy then
+                            setStatus("Menunggu Data Lab/TV diproses...")
+                            task.wait(1); acted = true
+                        else
+                            unequipAll()
+                            teleportToRoomCenter(roomNum, roomPath)
+                            task.wait(0.5)
+                            setStatus("BYPASS EXPLOIT: Memaksa Process Results...")
+                            local bypassSuccess = false
+                            for retry = 1, 3 do
+                                if type(fireproximityprompt) == "function" then fireproximityprompt(actualPP2)
+                                else
+                                    local oldReq  = actualPP2.RequiresLineOfSight
+                                    local oldDist = actualPP2.MaxActivationDistance
+                                    actualPP2.RequiresLineOfSight   = false
+                                    actualPP2.MaxActivationDistance = math.huge
+                                    actualPP2:InputHoldBegan() task.wait(0.2) actualPP2:InputHoldEnded()
+                                    actualPP2.RequiresLineOfSight   = oldReq
+                                    actualPP2.MaxActivationDistance = oldDist
+                                end
+                                task.wait(0.5)
+                                local cekScreen = monitor:FindFirstChild("Screen")
+                                if cekScreen then
+                                    local ui = cekScreen:FindFirstChild("UI")
+                                    if (ui and ui:IsA("SurfaceGui") and ui.Enabled) or (ui and ui:FindFirstChild("Report") and ui.Report.Visible) then bypassSuccess = true end
+                                    if not bypassSuccess then
+                                        for _, desc in ipairs(cekScreen:GetDescendants()) do
+                                            if desc:IsA("TextLabel") and desc.Name == "header" and string.match(desc.Text, "Finalizing") then bypassSuccess = true; break end
+                                        end
+                                    end
+                                end
+                                if bypassSuccess then break end
+                                setStatus("Bypass meleset! Retry (" .. retry .. "/3)...")
+                            end
+                            if bypassSuccess then setStatus("Bypass Berhasil!")
+                            else setStatus("GAGAL Bypass Monitor.") end
+                            acted = true
+                        end
+                    else
+                        setStatus("Menunggu Monitor Siap...")
+                        acted = false
+                    end
+                end
+                if acted then lastProgressTime = tick(); task.wait(0.5) end
+            end
+        else
+            task.wait(1)
+        end
+    end
+end
+
+local function botCycle_Med()
+    local activeShift = getShiftText()
+    local fireNPC, firePP = getFireEmergency_Med()
+    if fireNPC then
+        _G.AutoDoctor_IsIdle = false
+        pcall(function()
+            unequipAll()
+            local targetNode = fireNPC.PrimaryPart or fireNPC:FindFirstChildWhichIsA("BasePart")
+            setStatus("! P1: Memadamkan Pasien Terbakar !")
+            simpleInteract_Med(firePP, 3.2, targetNode)
+            task.wait(1.5)
+        end)
+        return
+    end
+    local placePrompt, targetRoomName, _, _ = getPlacePatientPrompt_Med()
+    if placePrompt then
+        _G.AutoDoctor_IsIdle = false
+        pcall(function()
+            unequipAll()
+            setStatus("Membawa pasien pingsan ke " .. tostring(targetRoomName) .. "...")
+            task.wait(0.2)
+            simpleInteract_Med(placePrompt, 1, true)
+            task.wait(1.5)
+        end)
+        return
+    end
+    local faintedPart, carryPP = getFaintedPatient_Med()
+    if faintedPart then
+        _G.AutoDoctor_IsIdle = false
+        pcall(function() processFaintedPatient_Med(faintedPart, carryPP, activeShift) end)
+        return
+    end
+    local room, roomNum = findActiveRoom_Med()
+    if room and roomNum then
+        _G.AutoDoctor_IsIdle = false
+        pcall(function() executeTreatmentCore_Med(room, roomNum, activeShift) end)
+    else
+        if not _G.AutoDoctor_IsIdle then
+            unequipAll()
+            teleportToIdle()
+            _G.AutoDoctor_IsIdle = true
+        end
+        setStatus("Idle (Memantau Medical)...")
+        task.wait(Config.ScanDelay)
+    end
+end
+
+local function startWorker_Med()
+    if _G.AutoDoctor_Worker then task.cancel(_G.AutoDoctor_Worker) end
+    _G.AutoDoctor_Worker = task.spawn(function()
+        while autoScanEnabled do
+            if not isBusy_Medical then
+                isBusy_Medical = true
+                _G.AutoDoctor_LastActionTick = tick()
+                pcall(botCycle_Med)
+                isBusy_Medical = false
+            end
+            task.wait(0.1)
+        end
+    end)
+end
+
+-- ==========================================
+-- EMERGENCY HELPERS
+-- ==========================================
+local function getEmergencyRoom(roomNum)
+    local rooms = workspace:FindFirstChild("Rooms")
+    local emerg = rooms and rooms:FindFirstChild("Emergency")
+    return emerg and emerg:FindFirstChild("Room" .. roomNum)
+end
+
+local function getPatientInEmergency(roomNum, centerCFrame, radius)
+    local center = centerCFrame.Position
+    radius = radius or Config.PatientBedRadius
+    local function checkNPC(obj)
+        if Players:GetPlayerFromCharacter(obj) then return nil, nil end
+        if not obj:IsA("Model") then return nil, nil end
+        local part = obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")
+        if not part then return nil, nil end
+        if (part.Position - center).Magnitude > radius then return nil, nil end
+
+        -- FIXED: Cek apakah NPC ini sedang bergerak keluar (leaving state)
+        -- NPC yang lagi jalan keluar: Humanoid.MoveDirection tidak zero
+        -- DAN tidak punya PP aktif yang relevan
+        local hum = obj:FindFirstChildOfClass("Humanoid")
+        local isLeaving = false
+        if hum then
+            -- Cek WalkSpeed dan MoveDirection — NPC yang jalan keluar aktif bergerak
+            local moveDir = hum.MoveDirection
+            local isMoving = moveDir.Magnitude > 0.1
+            -- Cek health — NPC yang sudah "selesai" biasanya HealthDisplayType berubah
+            -- atau tidak punya PE child
+            local hasPE = obj:FindFirstChild("PE", true) ~= nil
+            -- Kalau bergerak DAN tidak ada PE = kemungkinan besar lagi jalan keluar
+            if isMoving and not hasPE then
+                isLeaving = true
+            end
+        end
+
+        local bestPP = nil
+        local hasRelevantPP = false
+        for _, pp in ipairs(obj:GetDescendants()) do
+            if pp:IsA("ProximityPrompt") and pp.Enabled then
+                local txt  = string.lower(pp.ActionText or "")
+                local name = string.lower(pp.Name or "")
+                if txt:match("dna") or txt:match("treat") or txt:match("burns")
+                or txt:match("inject") or txt:match("sleep")
+                or name == "firepp" or name == "pp" or name == "pp2" then
+                    hasRelevantPP = true
+                    return obj, pp
+                end
+                if not bestPP then bestPP = pp end
+            end
+        end
+
+        -- FIXED: Kalau NPC tidak punya relevant PP dan sedang leaving → skip
+        -- Ini bedain NPC yang jalan keluar vs NPC baru yang belum punya PP
+        if isLeaving and not hasRelevantPP then
+            return nil, nil
+        end
+
+        -- NPC punya bestPP tapi bukan relevant → kemungkinan pasien baru yang PP-nya belum spawn
+        -- Hanya return kalau TIDAK sedang leaving
+        if bestPP and not isLeaving then return obj, bestPP end
+
+        -- Fallback humanoid — hanya kalau tidak leaving
+        if hum and not isLeaving then return obj, nil end
+
+        return nil, nil
+    end
+    if workspace:FindFirstChild("NPCs") then
+        for _, npc in ipairs(workspace.NPCs:GetChildren()) do
+            local found, pp = checkNPC(npc)
+            if found then return found, pp end
+        end
+    end
+    for _, obj in ipairs(workspace:GetChildren()) do
+        if obj ~= LocalPlayer.Character and obj.Name ~= "Rooms" and obj.Name ~= "Misc"
+        and obj.Name ~= "NPCs" and obj.Name ~= "Camera" then
+            local found, pp = checkNPC(obj)
+            if found then return found, pp end
+        end
+    end
+    return nil, nil
+end
+
+-- ==========================================
+-- EMERGENCY PATIENT MEMORY SYSTEM
+-- ==========================================
+local function erMemorySet(roomNum, patientInstance)
+    _G.ER_Memory[roomNum] = {
+        patient = patientInstance or "done",
+        tick    = tick(),
+    }
+end
+
+local function erMemoryCheck(roomNum, currentNPC)
+    local mem = _G.ER_Memory[roomNum]
+    if not mem then return false end
+    local memPatient = mem.patient
+
+    -- "done" string — legacy, clear aja
+    if memPatient == "done" then
+        -- FIXED: Kalau "done", tunggu max 30 detik untuk NPC pergi
+        -- Setelah itu paksa clear supaya tidak block pasien baru
+        if mem.tick and (tick() - mem.tick) > Config.ER_DoneTimeout then
+            _G.ER_Memory[roomNum] = nil; return false
+        end
+        -- Kalau NPC sudah tidak ada di area → clear lebih cepat
+        if not currentNPC then
+            _G.ER_Memory[roomNum] = nil; return false
+        end
+        return true  -- masih nunggu NPC pergi, max 30 detik
+    end
+
+    if typeof(memPatient) == "Instance" then
+        -- NPC pergi → clear
+        if not currentNPC then _G.ER_Memory[roomNum] = nil; return false end
+        -- NPC berbeda (pasien baru) → clear
+        if currentNPC ~= memPatient then _G.ER_Memory[roomNum] = nil; return false end
+        -- NPC sama tapi ada PE (kasus baru) → clear
+        if currentNPC:FindFirstChild("PE", true) then _G.ER_Memory[roomNum] = nil; return false end
+
+        -- FIXED: NPC sama, cek apakah masih anomali aktif
+        -- Kalau NPC adalah anomali dan masih punya ProximityPrompt aktif = belum benar-benar pergi
+        -- Tapi kalau NPC tidak punya PP aktif sama sekali = sudah "mati"/selesai
+        local hasActivePrompt = false
+        for _, pp in ipairs(currentNPC:GetDescendants()) do
+            if pp:IsA("ProximityPrompt") and pp.Enabled then
+                hasActivePrompt = true; break
+            end
+        end
+        if not hasActivePrompt then
+            -- NPC sudah tidak punya prompt apapun — clear memory, proses lagi
+            _G.ER_Memory[roomNum] = nil; return false
+        end
+
+        -- FIXED: Timeout memory — kalau sudah > 90 detik di memory, paksa clear
+        -- Mencegah false-lock kalau NPC lambat despawn
+        if mem.tick and (tick() - mem.tick) > Config.ER_MemoryTimeout then
+            if Config.ShowConsoleLogs then
+                print("[erMemoryCheck] Room" .. roomNum .. ": Memory timeout 90s — paksa clear")
+            end
+            _G.ER_Memory[roomNum] = nil; return false
+        end
+
+        return true
+    end
+
+    _G.ER_Memory[roomNum] = nil
+    return false
+end
+
+local function erMemoryReset()
+    _G.ER_Memory = { [6] = nil, [7] = nil, [8] = nil }
+end
+
+local function checkAnomalyStatus_Em(npcOrPos, isPos)
+    if workspace:FindFirstChild("NPCs") then
+        for _, npc in ipairs(workspace.NPCs:GetChildren()) do
+            local check = false
+            if isPos then
+                local p = npc.PrimaryPart or npc:FindFirstChildWhichIsA("BasePart")
+                if p and (p.Position - npcOrPos).Magnitude <= 12 then check = true end
+            else
+                check = (npc == npcOrPos)
+            end
+            if check then
+                local attr = npc:GetAttributes()
+                if attr.Skinwalker or attr.SkinwalkerEasy or attr.PenaltyWhenLettingIn or attr.PhotoEffect == "CursedPhoto" or attr.PhotoEffect2 == "CursedPhoto" then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+-- ==========================================
+-- ROOM 6
+-- ==========================================
+local function enforceRoom6Position()
+    local char = LocalPlayer.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if root then
+        local dist = (root.Position - EmergencyCFrames[6].Room.Position).Magnitude
+        if dist > 5 then
+            root.CFrame = EmergencyCFrames[6].Room
+            root.Velocity = Vector3.zero
+            task.wait(0.2)
+        end
+    end
+end
+
+local function interact_R6(prompt, holdTime)
+    if not prompt or not prompt:IsA("ProximityPrompt") then return end
+    local oldReq     = prompt.RequiresLineOfSight
+    local oldDist    = prompt.MaxActivationDistance
+    local oldEnabled = prompt.Enabled
+    prompt.RequiresLineOfSight   = false
+    prompt.MaxActivationDistance = math.huge
+    prompt.Enabled               = true
+    if type(fireproximityprompt) == "function" then fireproximityprompt(prompt, 1, true)
+    else prompt:InputHoldBegan() task.wait(holdTime or 0.25) prompt:InputHoldEnded() end
+    prompt.RequiresLineOfSight   = oldReq
+    prompt.MaxActivationDistance = oldDist
+    prompt.Enabled               = oldEnabled
+    task.wait(0.2)
+end
+
+local function isHealingDone_R6(minigame)
+    if not minigame then return false end
+    local tv      = minigame:FindFirstChild("TV")
+    local screen  = tv and tv:FindFirstChild("Screen")
+    local ui      = screen and screen:FindFirstChild("UI")
+    local healing = ui and ui:FindFirstChild("Healing")
+    if healing and healing:IsA("GuiObject") and healing.Visible == true then return true end
+    return false
+end
+
+local function fetchItem_R6(targetName, pendingMedsList)
+    InventoryMutex:lock("R6-fetch")
+    setStatus("Mengambil: " .. targetName, "R6")
+    local totalAmount, currentItems = checkTotalInventory()
+    if totalAmount >= Config.MaxInventory then
+        local itemToThrowAway = nil
+        if pendingMedsList then
+            local reqCounts = {}
+            for _, o in ipairs(pendingMedsList) do reqCounts[o] = (reqCounts[o] or 0) + 1 end
+            local haveCounts = {}
+            for _, item in ipairs(currentItems) do haveCounts[item.Name] = (haveCounts[item.Name] or 0) + 1 end
+            for _, item in ipairs(currentItems) do
+                local needed = reqCounts[item.Name] or 0
+                local have   = haveCounts[item.Name] or 0
+                if needed == 0 or have > needed then itemToThrowAway = item; break end
+            end
+        end
+        if not itemToThrowAway then itemToThrowAway = currentItems[1] end
+        if itemToThrowAway then
+            local char = LocalPlayer.Character
+            local hum  = char and char:FindFirstChild("Humanoid")
+            if hum then hum:EquipTool(itemToThrowAway) end
+            task.wait(0.1)
+            local trashPrompt = _G.AutoDoctor_TrashCache
+            if not trashPrompt or not trashPrompt.Parent then
+                trashPrompt = nil
+                for _, desc in ipairs(workspace:GetDescendants()) do
+                    if desc:IsA("ProximityPrompt") then
+                        local actText = string.lower(desc.ActionText or "")
+                        local objName = string.lower(desc.Parent and desc.Parent.Name or "")
+                        if actText:match("trash") or actText:match("throw") or actText:match("dispose") or objName:match("trash") then
+                            _G.AutoDoctor_TrashCache = desc; trashPrompt = desc; break
+                        end
+                    end
+                end
+            end
+            if trashPrompt then
+                teleportToTarget(trashPrompt)
+                task.wait(0.2)
+                interact_R6(trashPrompt, 0)
+            end
+        end
+    end
+    local promptToUse = nil
+    for _, desc in ipairs(workspace:GetDescendants()) do
+        if desc:IsA("ProximityPrompt") then
+            local pName = desc.Parent and desc.Parent.Name or ""
+            local oText = desc.ObjectText or ""
+            local aText = desc.ActionText or ""
+            if pName == targetName or oText:match(targetName) or aText:match(targetName) then
+                promptToUse = desc; break
+            end
+        end
+    end
+    if promptToUse then
+        teleportToTarget(promptToUse)
+        task.wait(0.2)
+        local gotItem = false
+        for retry = 1, 15 do
+            interact_R6(promptToUse, 0)
+            task.wait(0.15)
+            if LocalPlayer.Backpack:FindFirstChild(targetName) or
+               (LocalPlayer.Character and LocalPlayer.Character:FindFirstChild(targetName)) then
+                gotItem = true; break
+            end
+        end
+        if gotItem then
+            setStatus("BERHASIL DIAMBIL: " .. targetName, "R6")
+            InventoryMutex:unlock("R6-fetch")
+            return true
+        else
+            setStatus("GAGAL Mengambil (lag/kosong): " .. targetName, "R6")
+            InventoryMutex:unlock("R6-fetch")
+            return false
+        end
+    end
+    setStatus("GAGAL: " .. targetName .. " tidak ditemukan di map.", "R6")
+    InventoryMutex:unlock("R6-fetch")
+    return false
+end
+
+local function forceFailMinigame_R6()
+    local path     = getEmergencyRoom(6)
+    local minigame = path and path:FindFirstChild("Minigame")
+    if minigame and minigame:FindFirstChild("Colors") then
+        local firstBtn = minigame.Colors:FindFirstChild("Button", true)
+        if firstBtn then
+            local cd = firstBtn:FindFirstChildWhichIsA("ClickDetector")
+            if cd and fireclickdetector then fireclickdetector(cd) end
+        end
+    end
+end
+
+local function getPendingMeds_R6(tvUI)
+    local pending = {}
+    if not tvUI then return pending end
+    local invFolder = tvUI:FindFirstChild("inv", true)
+    if not invFolder then return pending end
+    for _, req in ipairs(invFolder:GetChildren()) do
+        if not req:IsA("UIListLayout") and table.find(ItemList, req.Name) then
+            local chk = req:FindFirstChild("check")
+            if not chk or not chk.Visible then table.insert(pending, req.Name) end
+        end
+    end
+    return pending
+end
+
+local function isR6ReallyActive()
+    local path     = getEmergencyRoom(6)
+    local minigame = path and path:FindFirstChild("Minigame")
+    if not path or not minigame then return false, nil, nil end
+    if isHealingDone_R6(minigame) then return false, path, minigame end
+    local patNPC, patPP = getPatientInEmergency(6, EmergencyCFrames[6].Patient, EmergencyCFrames[6].Radius)
+    if patNPC then return true, path, minigame end
+    local tvScreen = minigame:FindFirstChild("TV") and minigame.TV:FindFirstChild("Screen", true)
+    local tvUI     = tvScreen and tvScreen:FindFirstChild("UI")
+    local pending  = getPendingMeds_R6(tvUI)
+    if #pending > 0 then return true, path, minigame end
+    for _, pp in ipairs(minigame:GetDescendants()) do
+        if pp:IsA("ProximityPrompt") and pp.Enabled then
+            local txt = string.lower(pp.ActionText or "")
+            if txt:match("collect") then return true, path, minigame end
+        end
+    end
+    return false, path, minigame
+end
+
+local function executeRoom6()
+    local success, err = pcall(function()
+        local isActive, path, minigame = isR6ReallyActive()
+        if not isActive then
+            if not _G.Room6_IsIdle then unequipAll(); teleportToIdle(); _G.Room6_IsIdle = true end
+            setStatus("Idle (Standby R6 — menunggu pasien fisik)...", "R6")
+            task.wait(0.5)
+            return
+        end
+        local currentNPC_R6, _ = getPatientInEmergency(6, EmergencyCFrames[6].Patient, EmergencyCFrames[6].Radius)
+        if erMemoryCheck(6, currentNPC_R6) then
+            if not _G.Room6_IsIdle then unequipAll(); teleportToIdle(); _G.Room6_IsIdle = true end
+            setStatus("R6: Menunggu pasien lama pergi...", "R6")
+            task.wait(1)
+            return
+        end
+        _G.Room6_IsIdle = false
+        setStatus("R6 Aktif! Pasien terdeteksi, memulai treatment...", "R6")
+        local char = LocalPlayer.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if root then root.CFrame = EmergencyCFrames[6].Room; root.Velocity = Vector3.zero; task.wait(0.3) end
+        local isDone           = false
+        local lastProgressTime = tick()
+        local lastPendingCount = -1
+        local emptyCounter     = 0
+        local MAX_STUCK        = Config.StuckTimeout
+
+        while not isDone and autoEnabled_R6 do
+            task.wait(0.3)
+            local activeNow, _, _ = isR6ReallyActive()
+            if not activeNow then
+                emptyCounter = emptyCounter + 1
+                if emptyCounter >= 3 then
+                    setStatus("✅ R6 Clear. Kembali Idle...", "R6")
+                    erMemorySet(6, nil)
+                    clearAllMedItems()
+                    isDone = true; break
+                end
+                continue
+            else
+                emptyCounter = 0
+            end
+            if isHealingDone_R6(minigame) then
+                setStatus("✅ R6 Healing selesai! Kembali Idle...", "R6")
+                local doneNPC, _ = getPatientInEmergency(6, EmergencyCFrames[6].Patient, EmergencyCFrames[6].Radius)
+                erMemorySet(6, doneNPC)
+                clearAllMedItems()
+                isDone = true; break
+            end
+            if tick() - lastProgressTime >= MAX_STUCK then
+                setStatus("⚠️ R6 Stuck! Force reset...", "R6")
+                forceFailMinigame_R6()
+                isDone = true; break
+            end
+            local patNPC, patPP = getPatientInEmergency(6, EmergencyCFrames[6].Patient, EmergencyCFrames[6].Radius)
+            local tvScreen      = minigame:FindFirstChild("TV") and minigame.TV:FindFirstChild("Screen", true)
+            local tvUI          = tvScreen and tvScreen:FindFirstChild("UI")
+            local pending       = getPendingMeds_R6(tvUI)
+            if #pending > 0 then
+                if #pending ~= lastPendingCount then
+                    lastPendingCount = #pending
+                    lastProgressTime = tick()
+                end
+                if not patPP then
+                    setStatus("Menunggu NPC siap disuntik...", "R6")
+                    continue
+                end
+                if Config.AnomalyKiller and checkAnomalyStatus_Em(patNPC) then
+                    local hasBurnsPP = false
+                    for _, pp in ipairs(patNPC:GetDescendants()) do
+                        if pp:IsA("ProximityPrompt") and pp.Enabled then
+                            local ppName = string.lower(pp.Name or "")
+                            local ppAct  = string.lower(pp.ActionText or "")
+                            if ppName == "firepp" or ppAct:match("burns") then hasBurnsPP = true; break end
+                        end
+                    end
+                    if hasBurnsPP then
+                        setStatus("Anomali R6 terbakar — Ointment dulu!", "R6")
+                        local hasOintment = LocalPlayer.Backpack:FindFirstChild("Ointment") or LocalPlayer.Character:FindFirstChild("Ointment")
+                        if not hasOintment then fetchItem_R6("Ointment", {"Ointment"}) end
+                        if root then root.CFrame = EmergencyCFrames[6].Room; root.Velocity = Vector3.zero; task.wait(0.2) end
+                        local toolO = LocalPlayer.Backpack:FindFirstChild("Ointment") or LocalPlayer.Character:FindFirstChild("Ointment")
+                        local hum6b = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid")
+                        if toolO and hum6b then unequipAll(); task.wait(0.1); hum6b:EquipTool(toolO) end
+                        task.wait(0.2)
+                        local _, freshPP6b = getPatientInEmergency(6, EmergencyCFrames[6].Patient, EmergencyCFrames[6].Radius)
+                        interact_R6(freshPP6b or patPP, 0.25)
+                        lastProgressTime = tick()
+                        continue
+                    end
+
+                    setStatus("!! ANOMALI R6 — Menyiapkan racun !!", "R6")
+                    local wrongMedicine = findAndFetchWrongMedicine(pending, fetchItem_R6, "R6")
+                    if wrongMedicine then
+                        -- Anchor ke room position dulu
+                        if root then
+                            root.CFrame = EmergencyCFrames[6].Room
+                            root.Velocity = Vector3.zero
+                            root.AssemblyLinearVelocity = Vector3.zero
+                            task.wait(0.3)
+                        end
+
+                        -- SafeEquip: tunggu tool benar-benar equipped
+                        local char6   = LocalPlayer.Character
+                        local hum6    = char6 and char6:FindFirstChild("Humanoid")
+                        local tool6   = LocalPlayer.Backpack:FindFirstChild(wrongMedicine) or char6:FindFirstChild(wrongMedicine)
+                        local equipped = false
+                        if hum6 and tool6 then
+                            unequipAll(); task.wait(0.15)
+                            hum6:EquipTool(tool6)
+                            -- Tunggu max 1.5s sampai tool benar-benar di tangan
+                            local waitEquip = 0
+                            while waitEquip < 30 do
+                                if char6:FindFirstChild(wrongMedicine) then equipped = true; break end
+                                task.wait(0.05); waitEquip = waitEquip + 1
+                            end
+                        end
+
+                        if not equipped then
+                            setStatus("GAGAL equip racun R6: " .. wrongMedicine .. " — retry...", "R6")
+                            task.wait(1)
+                        else
+                            task.wait(0.15)
+                            -- Scan PP dari Patient position (bukan Room position)
+                            local _, freshPP6 = getPatientInEmergency(6, EmergencyCFrames[6].Patient, EmergencyCFrames[6].Radius)
+                            local injectPP = freshPP6 or patPP
+
+                            if not injectPP then
+                                -- Last resort: scan seluruh minigame descendants
+                                for _, desc in ipairs(minigame:GetDescendants()) do
+                                    if desc:IsA("ProximityPrompt") then
+                                        local act = string.lower(desc.ActionText or "")
+                                        if act:match("inject") or act:match("treat") or act:match("apply") or desc.Name:lower() == "pp" then
+                                            injectPP = desc; break
+                                        end
+                                    end
+                                end
+                            end
+
+                            if injectPP then
+                                erMemorySet(6, patNPC)
+                                setStatus("MENYUNTIKKAN RACUN R6: " .. wrongMedicine, "R6")
+                                interact_R6(injectPP, 0.25)
+                                task.wait(0.5)
+                                setStatus("--- ANOMALI R6 HANGUS! ---", "R6")
+                                clearAllMedItems()
+                                lastProgressTime = tick()
+                                isDone = true; break
+                            else
+                                setStatus("GAGAL: Inject PP R6 tidak ditemukan!", "R6")
+                                task.wait(1)
+                            end
+                        end
+                    else
+                        setStatus("Semua racun R6 habis stok! Tunggu...", "R6")
+                        task.wait(2)
+                    end
+
+                else
+                    for _, obat in ipairs(pending) do
+                        local hasItem = LocalPlayer.Backpack:FindFirstChild(obat) or (LocalPlayer.Character and LocalPlayer.Character:FindFirstChild(obat))
+                        if not hasItem then
+                            fetchItem_R6(obat, pending)
+                            if root then root.CFrame = EmergencyCFrames[6].Room; root.Velocity = Vector3.zero; task.wait(0.2) end
+                        end
+                        local tool = LocalPlayer.Backpack:FindFirstChild(obat)
+                        local hum  = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid")
+                        if tool and hum then unequipAll(); task.wait(0.1); hum:EquipTool(tool) end
+                        task.wait(0.2)
+                        local _, freshPP = getPatientInEmergency(6, EmergencyCFrames[6].Patient, EmergencyCFrames[6].Radius)
+                        setStatus("Menyuntikkan: " .. obat, "R6")
+                        interact_R6(freshPP or patPP, 0.25)
+                        lastProgressTime = tick()
+                    end
+                    task.wait(0.5)
+                    continue
+                end
+            end
+            local collected = false
+            for _, pp in ipairs(minigame:GetDescendants()) do
+                if pp:IsA("ProximityPrompt") and pp.Enabled then
+                    local txt = string.lower(pp.ActionText or "")
+                    if txt:match("collect") then
+                        setStatus("Mengambil Hasil (Collect)...", "R6")
+                        if root then root.CFrame = EmergencyCFrames[6].Room; root.Velocity = Vector3.zero; task.wait(0.1) end
+                        interact_R6(pp, 0.5)
+                        lastProgressTime = tick()
+                        collected = true
+                        task.wait(0.5)
+                        break
+                    end
+                end
+            end
+            if collected then continue end
+            local monitor = minigame:FindFirstChild("Monitor")
+            if monitor then
+                for _, pp in ipairs(monitor:GetDescendants()) do
+                    if pp:IsA("ProximityPrompt") and string.lower(pp.ActionText or ""):match("process") then
+                        setStatus("BYPASS: Process Instan...", "R6")
+                        if root then root.CFrame = EmergencyCFrames[6].Room; root.Velocity = Vector3.zero; task.wait(0.1) end
+                        interact_R6(pp, 0.25)
+                        lastProgressTime = tick()
+                        task.wait(0.5)
+                        break
+                    end
+                end
+            end
+            setStatus("R6: Menunggu aksi berikutnya...", "R6")
+        end
+        if not _G.Room6_IsIdle then unequipAll(); teleportToIdle(); _G.Room6_IsIdle = true end
+    end)
+    if not success then
+        setStatus("❌ ERROR R6: " .. tostring(err), "R6")
+        task.wait(3)
+    end
+end
+
+-- ==========================================
+-- ROOM 7
+-- ==========================================
+local function safeEquip_R7(itemName)
+    local char    = LocalPlayer.Character
+    local backpack = LocalPlayer:FindFirstChild("Backpack")
+    local hum     = char and char:FindFirstChild("Humanoid")
+    if not char or not backpack or not hum then return false end
+    hum:UnequipTools()
+    local t1 = 0
+    while char:FindFirstChildOfClass("Tool") and t1 < 10 do task.wait(0.05); t1 = t1 + 1 end
+    local tool = backpack:FindFirstChild(itemName) or char:FindFirstChild(itemName)
+    if not tool then return false end
+    hum:EquipTool(tool)
+    local t2 = 0
+    while not char:FindFirstChild(itemName) and t2 < 15 do task.wait(0.05); t2 = t2 + 1 end
+    task.wait(0.5)
+    return char:FindFirstChild(itemName) ~= nil
+end
+
+local function simpleInteract_R7(prompt, customHold, autoLock)
+    if prompt and prompt:IsA("ProximityPrompt") then
+        if autoLock then teleportToTarget(prompt) end
+        local oldReq  = prompt.RequiresLineOfSight
+        local oldDist = prompt.MaxActivationDistance
+        prompt.RequiresLineOfSight   = false
+        prompt.MaxActivationDistance = math.huge
+        if type(fireproximityprompt) == "function" then fireproximityprompt(prompt, 1, true)
+        else prompt:InputHoldBegan() task.wait(customHold or prompt.HoldDuration or 0.25) prompt:InputHoldEnded() end
+        _G.AutoRoom7_LastActionTick  = tick()
+        prompt.RequiresLineOfSight   = oldReq
+        prompt.MaxActivationDistance = oldDist
+        task.wait(0.2)
+    end
+end
+
+local function fetchItem_R7(targetName, pendingMedsList)
+    InventoryMutex:lock("R7-fetch")
+    setStatus("Mengambil " .. targetName .. "...", "R7")
+    local totalAmount, currentItems = checkTotalInventory()
+    if totalAmount >= Config.MaxInventory then
+        local itemToThrowAway = nil
+        if pendingMedsList then
+            local reqCounts = {}
+            for _, o in ipairs(pendingMedsList) do reqCounts[o] = (reqCounts[o] or 0) + 1 end
+            local haveCounts = {}
+            for _, item in ipairs(currentItems) do haveCounts[item.Name] = (haveCounts[item.Name] or 0) + 1 end
+            for _, item in ipairs(currentItems) do
+                local needed = reqCounts[item.Name] or 0
+                local have   = haveCounts[item.Name] or 0
+                if needed == 0 or have > needed then itemToThrowAway = item; break end
+            end
+        end
+        if not itemToThrowAway then itemToThrowAway = currentItems[1] end
+        if itemToThrowAway then
+            local trashPrompt = _G.AutoDoctor_TrashCache
+            if not trashPrompt or not trashPrompt.Parent then
+                trashPrompt = nil
+                for _, desc in ipairs(workspace:GetDescendants()) do
+                    if desc:IsA("ProximityPrompt") then
+                        local actText = string.lower(desc.ActionText or "")
+                        local objName = string.lower(desc.Parent and desc.Parent.Name or "")
+                        if actText:match("trash") or actText:match("throw") or actText:match("dispose") or objName:match("trash") then
+                            _G.AutoDoctor_TrashCache = desc; trashPrompt = desc; break
+                        end
+                    end
+                end
+            end
+            if trashPrompt then
+                teleportToTarget(trashPrompt)
+                if safeEquip_R7(itemToThrowAway.Name) then
+                    local oldReq  = trashPrompt.RequiresLineOfSight
+                    local oldDist = trashPrompt.MaxActivationDistance
+                    trashPrompt.RequiresLineOfSight   = false
+                    trashPrompt.MaxActivationDistance = math.huge
+                    trashPrompt.HoldDuration          = 0
+                    if type(fireproximityprompt) == "function" then fireproximityprompt(trashPrompt, 1, true)
+                    else trashPrompt:InputHoldBegan() task.wait(0.1) trashPrompt:InputHoldEnded() end
+                    trashPrompt.RequiresLineOfSight   = oldReq
+                    trashPrompt.MaxActivationDistance = oldDist
+                    task.wait(0.5)
+                end
+            end
+        end
+    end
+    local promptToUse = nil
+    for _, desc in ipairs(workspace:GetDescendants()) do
+        if desc:IsA("ProximityPrompt") then
+            local pName = desc.Parent and desc.Parent.Name or ""
+            local oText = desc.ObjectText or ""
+            local aText = desc.ActionText or ""
+            if pName == targetName or oText:match(targetName) or aText:match(targetName) then
+                promptToUse = desc; break
+            end
+        end
+    end
+    if promptToUse then
+        unequipAll()
+        teleportToTarget(promptToUse)
+        promptToUse.RequiresLineOfSight   = false
+        promptToUse.MaxActivationDistance = math.huge
+        promptToUse.HoldDuration          = 0
+        local gotItem = false
+        for retry = 1, 15 do
+            if type(fireproximityprompt) == "function" then fireproximityprompt(promptToUse, 1, true)
+            else promptToUse:InputHoldBegan() task.wait(0.1) promptToUse:InputHoldEnded() end
+            task.wait(0.15)
+            if LocalPlayer.Backpack:FindFirstChild(targetName) or
+               (LocalPlayer.Character and LocalPlayer.Character:FindFirstChild(targetName)) then
+                gotItem = true; break
+            end
+        end
+        _G.AutoRoom7_LastActionTick = tick()
+        if gotItem then
+            setStatus("Berhasil Mengambil: " .. targetName, "R7")
+            InventoryMutex:unlock("R7-fetch")
+            return true
+        else
+            setStatus("GAGAL Mengambil (lag/kosong): " .. targetName, "R7")
+            InventoryMutex:unlock("R7-fetch")
+            return false
+        end
+    end
+    InventoryMutex:unlock("R7-fetch")
+    return false
+end
+
+local function getRoom7PendingMedicines(reportUI)
+    local pending = {}
+    if not reportUI then return pending end
+    local invFolder = reportUI:FindFirstChild("inv", true)
+    if not invFolder then return pending end
+    for _, itemReq in ipairs(invFolder:GetChildren()) do
+        if table.find(ItemList, itemReq.Name) then
+            local checkMark = itemReq:FindFirstChild("check")
+            if not checkMark or (checkMark and checkMark.Visible == false) then table.insert(pending, itemReq.Name) end
+        end
+    end
+    return pending
+end
+
+local function isMinigameUIOpen_R7()
+    local mg = PlayerGui:FindFirstChild("Minigame")
+    if mg then
+        local unlockMouse = mg:FindFirstChild("UnlockMouse")
+        if unlockMouse and unlockMouse:IsA("GuiObject") and unlockMouse.Visible then return true end
+    end
+    local hbUI = PlayerGui:FindFirstChild("HeartbeatMinigameUI")
+    if hbUI then
+        for _, desc in ipairs(hbUI:GetDescendants()) do
+            if desc:IsA("TextLabel") and desc.Visible and string.match(string.upper(desc.Text), "HEART SCAN COMPLETE") then return true end
+        end
+    end
+    return false
+end
+
+-- ==========================================
+-- ROOM 7 HELPERS — FIXED
+-- ==========================================
+local function isR7HealingDone(minigame)
+    if not minigame then return false end
+    local tv     = minigame:FindFirstChild("TV")
+    local screen = tv and tv:FindFirstChild("Screen")
+    local ui     = screen and screen:FindFirstChild("UI")
+    local healing = ui and ui:FindFirstChild("Healing")
+    return healing and healing:IsA("GuiObject") and healing.Visible == true
+end
+
+-- Cari inBedPP lebih broad — nama InBed, atau action inject/apply/treat/use
+local function findInBedPP_R7(minigame, currentPatient)
+    if not minigame then return nil end
+    local bed = minigame:FindFirstChild("Bed")
+    if bed then
+        local inBed = bed:FindFirstChild("InBed")
+        if inBed then
+            for _, pp in ipairs(inBed:GetDescendants()) do
+                if pp:IsA("ProximityPrompt") then return pp end
+            end
+            local pp = inBed:FindFirstChildWhichIsA("ProximityPrompt")
+            if pp then return pp end
+        end
+        for _, pp in ipairs(bed:GetDescendants()) do
+            if pp:IsA("ProximityPrompt") and pp.Enabled then return pp end
+        end
+    end
+    for _, pp in ipairs(minigame:GetDescendants()) do
+        if pp:IsA("ProximityPrompt") then
+            local name = string.lower(pp.Name or "")
+            local act  = string.lower(pp.ActionText or "")
+            if name == "pp" or name == "inbedpp" or name:match("bed")
+            or act:match("inject") or act:match("apply") or act:match("treat") or act:match("use") then
+                return pp
+            end
+        end
+    end
+    if currentPatient then
+        for _, pp in ipairs(currentPatient:GetDescendants()) do
+            if pp:IsA("ProximityPrompt") and pp.Enabled then
+                local act = string.lower(pp.ActionText or "")
+                if act:match("inject") or act:match("apply") or act:match("treat") then
+                    return pp
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function checkRoom7Status()
+    local room7 = getEmergencyRoom(7)
+    if not room7 then return nil, false end
+
+    if _G.AutoRoom7_BlacklistTime > 0 and (tick() - _G.AutoRoom7_BlacklistTime < Config.BlacklistDuration) then
+        if Config.ShowConsoleLogs then
+            print("[R7] checkRoom7Status: SKIP — blacklist aktif")
+        end
+        return nil, false
+    end
+
+    local minigame = room7:FindFirstChild("Minigame")
+    local currentPatient, _ = getPatientInEmergency(7, EmergencyCFrames[7].Step2, EmergencyCFrames[7].Radius)
+
+    -- Track patient change — reset LegitHealing saat NPC berganti
+    if currentPatient ~= _G.AutoRoom7_LastPatient then
+        if Config.ShowConsoleLogs then
+            local oldName = _G.AutoRoom7_LastPatient and _G.AutoRoom7_LastPatient.Name or "nil"
+            local newName = currentPatient and currentPatient.Name or "nil"
+            print("[R7] NPC berganti: " .. oldName .. " -> " .. newName .. " — reset LegitHealing & memory")
+        end
+        _G.AutoRoom7_LastPatient  = currentPatient
+        _G.AutoRoom7_LegitHealing = false
+        -- FIXED: Clear memory saat NPC berganti supaya NPC baru tidak ke-block
+        _G.ER_Memory[7] = nil
+    end
+
+    -- Tidak ada pasien — clear memory
+    if not currentPatient then
+        _G.ER_Memory[7] = nil
+        return nil, false
+    end
+
+    -- Cek memory — skip kalau NPC ini sudah selesai
+    if erMemoryCheck(7, currentPatient) then
+        if Config.ShowConsoleLogs then
+            print("[R7] checkRoom7Status: SKIP — erMemory block NPC " .. currentPatient.Name)
+        end
+        return nil, false
+    end
+
+    -- Healing done check — set memory hanya kalau LegitHealing sudah true
+    if isR7HealingDone(minigame) and _G.AutoRoom7_LegitHealing then
+        if Config.ShowConsoleLogs then
+            print("[R7] Healing selesai & legit — set memory, skip NPC ini")
+        end
+        erMemorySet(7, currentPatient)
+        return nil, true
+    end
+
+    -- Ada pasien, belum memory blocked — return room7 untuk diproses
+    if Config.ShowConsoleLogs then
+        print("[R7] checkRoom7Status: AKTIF — NPC=" .. currentPatient.Name
+            .. " | healing=" .. tostring(isR7HealingDone(minigame))
+            .. " | legit=" .. tostring(_G.AutoRoom7_LegitHealing))
+    end
+    return room7, false
+end
+
+local function FireButton_R7(button)
+    local wasActive = button.Active
+    pcall(function() button.Active = true end)
+    if typeof(getconnections) == "function" then
+        pcall(function()
+            for _, c in ipairs(getconnections(button.MouseButton1Down)) do task.spawn(function() pcall(function() c:Fire() end) end) end
+            task.wait(0.05)
+            for _, c in ipairs(getconnections(button.Activated)) do task.spawn(function() pcall(function() c:Fire() end) end) end
+        end)
+    elseif typeof(firesignal) == "function" then
+        pcall(function() firesignal(button.MouseButton1Down) task.wait(0.05) firesignal(button.Activated) end)
+    else
+        local pos   = button.AbsolutePosition
+        local size  = button.AbsoluteSize
+        local inset = GuiService:GetGuiInset()
+        local x = pos.X + size.X / 2
+        local y = pos.Y + size.Y / 2 + inset.Y
+        pcall(function()
+            VirtualInputManager:SendMouseButtonEvent(x, y, 0, true, game, 0)
+            task.wait(0.05)
+            VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 0)
+        end)
+    end
+    pcall(function() button.Active = wasActive end)
+end
+
+local function FindClickable_R7(container)
+    if container:IsA("ImageButton") or container:IsA("TextButton") then return container end
+    for _, d in ipairs(container:GetDescendants()) do
+        if (d:IsA("ImageButton") or d:IsA("TextButton")) and d.Visible then return d end
+    end
+    return container
+end
+
+local function DeepScan_R7(root)
+    local isHand, isSkull = false, false
+    local best = root
+    local function check(obj)
+        if obj:IsA("ImageLabel") or obj:IsA("ImageButton") then
+            if obj.Image == ID_HAND  then isHand  = true; best = obj end
+            if obj.Image == ID_SKULL then isSkull = true; best = obj end
+        end
+    end
+    check(root)
+    for _, d in ipairs(root:GetDescendants()) do check(d) end
+    return isHand, isSkull, best
+end
+
+local function ProcessMinigameChild_R7(child)
+    task.wait(0.03)
+    if not child or not child.Parent or not isAutoPlaying_R7 then return end
+    local isHand, isSkull, _ = DeepScan_R7(child)
+    if isHand then
+        local button = FindClickable_R7(child)
+        FireButton_R7(button)
+        totalHand = totalHand + 1
+        HandLbl.Text  = "👆 Clicked: " .. totalHand
+    elseif isSkull then
+        totalSkull = totalSkull + 1
+        SkullLbl.Text = "💀 Skipped: " .. totalSkull
+    end
+end
+
+local function HookMinigameFrame_R7(frame)
+    table.insert(minigameConnections, frame.ChildAdded:Connect(function(child) task.spawn(function() ProcessMinigameChild_R7(child) end) end))
+    for _, child in ipairs(frame:GetChildren()) do task.spawn(function() ProcessMinigameChild_R7(child) end) end
+end
+
+local function HookMinigameGui_R7(gui)
+    for _, child in ipairs(gui:GetChildren()) do if child:IsA("Frame") then HookMinigameFrame_R7(child) end end
+    table.insert(minigameConnections, gui.ChildAdded:Connect(function(child) if child:IsA("Frame") then HookMinigameFrame_R7(child) end end))
+end
+
+table.insert(minigameConnections, PlayerGui.ChildAdded:Connect(function(c)
+    if c.Name == "Minigame" then task.wait(0.3); HookMinigameGui_R7(c) end
+end))
+local mgExists = PlayerGui:FindFirstChild("Minigame")
+if mgExists then HookMinigameGui_R7(mgExists) end
+
+local function executeRoom7(room7, activeShift)
+    -- Minigame UI check
+    if isMinigameUIOpen_R7() then
+        setStatus("Minigame Berjalan / Memproses Hasil...", "R7")
+        _G.AutoRoom7_LastActionTick = tick()
+        task.wait(1)
+        return
+    end
+
+    local minigame = room7:FindFirstChild("Minigame")
+    if not minigame then return end
+
+    local currentPatient, _ = getPatientInEmergency(7, EmergencyCFrames[7].Step2, EmergencyCFrames[7].Radius)
+    if not currentPatient then
+        setStatus("Pasien pergi. Kembali Idle...", "R7")
+        task.wait(1); return
+    end
+
+    -- Healing selesai dan kita yang inject — clear
+    if isR7HealingDone(minigame) and _G.AutoRoom7_LegitHealing then
+        setStatus("Pasien Sembuh! Kembali Idle...", "R7")
+        erMemorySet(7, currentPatient)
+        clearAllMedItems()
+        task.wait(1); return
+    end
+
+    -- Pastikan ada di dalam ruangan
+    local char = LocalPlayer.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if root and (root.Position - EmergencyCFrames[7].Step2.Position).Magnitude > 20 then
+        setStatus("Memasuki Ruangan 7...", "R7")
+        unequipAll()
+        teleportToTarget(EmergencyCFrames[7].Step2)
+        task.wait(0.5)
+    end
+
+    local tv = minigame:FindFirstChild("TV") and minigame.TV:FindFirstChild("Screen")
+
+    -- ==========================================
+    -- STEP 1: Burns check di NPC
+    -- ==========================================
+    for _, desc in ipairs(currentPatient:GetDescendants()) do
+        if desc:IsA("ProximityPrompt") and desc.Enabled then
+            local actText = string.lower(desc.ActionText or "")
+            local name    = string.lower(desc.Name or "")
+            if name == "firepp" or actText:match("burns") then
+                local hasOintment = LocalPlayer.Backpack:FindFirstChild("Ointment") or LocalPlayer.Character:FindFirstChild("Ointment")
+                if not hasOintment then fetchItem_R7("Ointment", {"Ointment"}) end
+                teleportToTarget(desc.Parent)
+                if safeEquip_R7("Ointment") then
+                    setStatus("Mengoleskan Ointment (Burns)...", "R7")
+                    simpleInteract_R7(desc, 3, false)
+                    _G.AutoRoom7_LastActionTick = tick()
+                    task.wait(1.5); return
+                end
+            end
+        end
+    end
+
+    -- ==========================================
+    -- STEP 2: DNA check di NPC
+    -- ==========================================
+    for _, desc in ipairs(currentPatient:GetDescendants()) do
+        if desc:IsA("ProximityPrompt") and desc.Enabled then
+            local actText = string.lower(desc.ActionText or "")
+            local name    = string.lower(desc.Name or "")
+            if actText:match("dna") or name:match("dna") then
+                unequipAll()
+                setStatus("Mengambil DNA Sample...", "R7")
+                simpleInteract_R7(desc, 0.5, true)
+                _G.AutoRoom7_LastActionTick = tick()
+                task.wait(1.5); return
+            end
+        end
+    end
+
+    -- ==========================================
+    -- STEP 3: TV Report — inject obat
+    -- FIXED: Pakai findInBedPP_R7 yang lebih broad
+    -- ==========================================
+    local reportUI  = tv and tv:FindFirstChild("UI") and tv.UI:FindFirstChild("Report")
+    local invFolder = reportUI and reportUI:FindFirstChild("inv", true)
+    local tvHasMeds = (reportUI and reportUI.Visible and invFolder and #invFolder:GetChildren() > 1)
+
+    -- FIXED: Cari inBedPP dengan helper baru, bukan strict parent.Name check
+    local inBedPP = findInBedPP_R7(minigame, currentPatient)
+
+    if Config.ShowConsoleLogs then
+        print("[R7] executeRoom7: tvHasMeds=" .. tostring(tvHasMeds)
+            .. " | inBedPP=" .. tostring(inBedPP ~= nil)
+            .. " | healing=" .. tostring(isR7HealingDone(minigame)))
+    end
+
+    if tvHasMeds then
+        local pendingMeds = getRoom7PendingMedicines(reportUI)
+
+        if Config.ShowConsoleLogs then
+            print("[R7] pendingMeds: " .. #pendingMeds .. " — " .. table.concat(pendingMeds, ", "))
+        end
+
+        -- Anomaly kill
+        if #pendingMeds > 0 and Config.AnomalyKiller and checkAnomalyStatus_Em(currentPatient) then
+            setStatus("!! ANOMALI R7 — Menyiapkan racun !!", "R7")
+            local wrongMedicine = findAndFetchWrongMedicine(pendingMeds, fetchItem_R7, "R7")
+            if wrongMedicine then
+                teleportToTarget(EmergencyCFrames[7].Step2)
+                if safeEquip_R7(wrongMedicine) then
+                    erMemorySet(7, currentPatient)
+                    _G.AutoRoom7_LegitHealing = true
+                    setStatus("!! MENYUNTIKKAN RACUN (" .. wrongMedicine .. ") !!", "R7")
+                    if inBedPP then simpleInteract_R7(inBedPP, 0.25) end
+                    _G.AutoRoom7_LastActionTick = tick()
+                    task.wait(2)
+                    setStatus("--- ANOMALI R7 HANGUS! ---", "R7")
+                    clearAllMedItems()
+                end
+            else
+                setStatus("Semua racun R7 habis stok! Tunggu...", "R7")
+                task.wait(2)
+            end
+            return
+        end
+
+        -- Normal inject
+        if #pendingMeds > 0 then
+            if not inBedPP then
+                -- Belum ada PP — mungkin game belum ready, tunggu sebentar
+                setStatus("R7: Menunggu inject PP muncul...", "R7")
+                task.wait(1); return
+            end
+            for _, obat in ipairs(pendingMeds) do
+                local hasIt = LocalPlayer.Backpack:FindFirstChild(obat) or LocalPlayer.Character:FindFirstChild(obat)
+                if not hasIt then
+                    fetchItem_R7(obat, pendingMeds)
+                    task.wait(0.2)
+                end
+                local stillHasIt = LocalPlayer.Backpack:FindFirstChild(obat) or LocalPlayer.Character:FindFirstChild(obat)
+                if stillHasIt then
+                    teleportToTarget(EmergencyCFrames[7].Step2)
+                    if safeEquip_R7(obat) then
+                        setStatus("Menyuntikkan " .. obat, "R7")
+                        simpleInteract_R7(inBedPP, 0.25)
+                        -- FIXED: Set LegitHealing setelah kita inject — bukan di checkRoom7Status
+                        _G.AutoRoom7_LegitHealing = true
+                        _G.AutoRoom7_LastActionTick = tick()
+                        task.wait(Config.InjectionDelay)
+                    end
+                else
+                    setStatus("R7: Gagal ambil " .. obat .. ", skip...", "R7")
+                end
+            end
+        else
+            -- Semua obat sudah tercentang — tunggu healing
+            setStatus("Obat Tercentang, Tunggu Healing...", "R7")
+            _G.AutoRoom7_LegitHealing = true
+            if inBedPP then simpleInteract_R7(inBedPP, 0.25) end
+            _G.AutoRoom7_LastActionTick = tick()
+            task.wait(1)
+        end
+        return
+    end
+
+    -- ==========================================
+    -- STEP 4: Collect result
+    -- ==========================================
+    for _, prompt in ipairs(minigame:GetDescendants()) do
+        if prompt:IsA("ProximityPrompt") and prompt.Enabled then
+            local actText = string.lower(prompt.ActionText or "")
+            if actText:match("collect") then
+                setStatus("Mengambil Hasil: Collect", "R7")
+                unequipAll()
+                simpleInteract_R7(prompt, 0.5, true)
+                _G.AutoRoom7_LastActionTick = tick()
+                task.wait(1); return
+            end
+        end
+    end
+
+    -- ==========================================
+    -- STEP 5: Process bypass
+    -- ==========================================
+    local hasEarlyStep  = false
+    local processPrompt = nil
+    for _, prompt in ipairs(minigame:GetDescendants()) do
+        if prompt:IsA("ProximityPrompt") then
+            local actText = string.lower(prompt.ActionText or "")
+            if actText:match("process") then processPrompt = prompt end
+            if prompt.Enabled and (actText:match("prepare") or actText:match("set up")
+            or actText:match("turn on") or actText:match("begin")) then
+                hasEarlyStep = true
+            end
+        end
+    end
+
+    if hasEarlyStep and processPrompt then
+        setStatus("BYPASS: Menembak Process...", "R7")
+        unequipAll()
+        local oldEnabled = processPrompt.Enabled
+        processPrompt.Enabled = true
+        simpleInteract_R7(processPrompt, 0.5, true)
+        processPrompt.Enabled = oldEnabled
+        _G.AutoRoom7_LastActionTick = tick()
+        task.wait(1); return
+    elseif processPrompt and processPrompt.Enabled then
+        setStatus("Mengeksekusi Process...", "R7")
+        unequipAll()
+        simpleInteract_R7(processPrompt, 0.5, true)
+        _G.AutoRoom7_LastActionTick = tick()
+        task.wait(1); return
+    end
+
+    -- Tidak ada yang bisa dilakukan — log dan tunggu
+    if Config.ShowConsoleLogs then
+        -- Print semua prompt yang ada di minigame untuk debug
+        local prompts = {}
+        for _, pp in ipairs(minigame:GetDescendants()) do
+            if pp:IsA("ProximityPrompt") then
+                table.insert(prompts, (pp.Name or "?") .. "[" .. (pp.ActionText or "?") .. "|en=" .. tostring(pp.Enabled) .. "]")
+            end
+        end
+        print("[R7] No action found. Prompts: " .. (#prompts > 0 and table.concat(prompts, ", ") or "NONE"))
+    end
+    setStatus("R7: Menunggu Reaksi Server...", "R7")
+    task.wait(0.5)
+end
+
+-- ==========================================
+-- ROOM 8
+-- ==========================================
+local function ensureInRoom8()
+    local char = LocalPlayer.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if root then
+        local distance = (root.Position - EmergencyCFrames[8].Bed.Position).Magnitude
+        if distance > 20 then
+            setStatus("Anchor: Kembali ke kasur R8...", "R8")
+            root.CFrame = EmergencyCFrames[8].Bed
+            root.AssemblyLinearVelocity = Vector3.zero
+            task.wait(0.2)
+        end
+    end
+end
+
+local function safeEquip_R8(itemName)
+    local char    = LocalPlayer.Character
+    local backpack = LocalPlayer:FindFirstChild("Backpack")
+    local hum     = char and char:FindFirstChild("Humanoid")
+    if not char or not backpack or not hum then return false end
+    if char:FindFirstChild(itemName) then return true end
+    hum:UnequipTools()
+    local tool = backpack:FindFirstChild(itemName)
+    if not tool then return false end
+    hum:EquipTool(tool)
+    local t2 = 0
+    while not char:FindFirstChild(itemName) and t2 < 15 do task.wait(0.05); t2 = t2 + 1 end
+    task.wait(0.1)
+    return char:FindFirstChild(itemName) ~= nil
+end
+
+local function simpleInteract_R8(prompt, customHold, autoLock)
+    if prompt and prompt:IsA("ProximityPrompt") then
+        if autoLock then ensureInRoom8() end
+        local oldReq  = prompt.RequiresLineOfSight
+        local oldDist = prompt.MaxActivationDistance
+        prompt.RequiresLineOfSight   = false
+        prompt.MaxActivationDistance = math.huge
+        if type(fireproximityprompt) == "function" then fireproximityprompt(prompt, 1, true)
+        else prompt:InputHoldBegan() task.wait(customHold or prompt.HoldDuration or 0.1) prompt:InputHoldEnded() end
+        _G.Room8Auto_LastActionTick  = tick()
+        prompt.RequiresLineOfSight   = oldReq
+        prompt.MaxActivationDistance = oldDist
+    end
+end
+
+local function smartTrash_R8(toolToTrash)
+    InventoryMutex:lock("R8-trash")
+    local char = LocalPlayer.Character
+    local hum  = char and char:FindFirstChild("Humanoid")
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not hum or not root or not toolToTrash then InventoryMutex:unlock("R8-trash"); return false end
+    local prompt = getPromptFromCache("Trash", true, nil, _G.Room8_TrashCache)
+    if not prompt then
+        for _, desc in ipairs(workspace:GetDescendants()) do
+            if desc:IsA("ProximityPrompt") then
+                local actText = string.lower(desc.ActionText or "")
+                local objName = string.lower(desc.Parent and desc.Parent.Name or "")
+                if actText:match("trash") or actText:match("throw") or actText:match("dispose") or objName:match("trash") then
+                    _G.Room8_TrashCache = desc; prompt = desc; break
+                end
+            end
+        end
+    else
+        _G.Room8_TrashCache = prompt
+    end
+    if prompt then
+        setStatus("Buang Item R8: " .. toolToTrash.Name, "R8")
+        hum:EquipTool(toolToTrash)
+        task.wait(0.05)
+        local targetPart = prompt.Parent:IsA("BasePart") and prompt.Parent or prompt.Parent:FindFirstChildWhichIsA("BasePart", true)
+        local dist       = targetPart and (root.Position - targetPart.Position).Magnitude or 0
+        local originalPos = root.CFrame
+        if dist > 14 and targetPart then
+            root.CFrame = targetPart.CFrame * CFrame.new(0, 3, 0)
+            root.AssemblyLinearVelocity = Vector3.zero
+            task.wait(0.05)
+        end
+        local oldReq  = prompt.RequiresLineOfSight
+        local oldDist = prompt.MaxActivationDistance
+        prompt.RequiresLineOfSight   = false
+        prompt.MaxActivationDistance = math.huge
+        prompt.HoldDuration          = 0
+        if type(fireproximityprompt) == "function" then fireproximityprompt(prompt, 1, true)
+        else prompt:InputHoldBegan() task.wait(0.05) prompt:InputHoldEnded() end
+        prompt.RequiresLineOfSight   = oldReq
+        prompt.MaxActivationDistance = oldDist
+        _G.Room8Auto_LastActionTick  = tick()
+        task.wait(0.05)
+        if dist > 14 then root.CFrame = originalPos; root.AssemblyLinearVelocity = Vector3.zero; task.wait(0.05) end
+        InventoryMutex:unlock("R8-trash")
+        return true
+    end
+    InventoryMutex:unlock("R8-trash")
+    return false
+end
+
+local function smartFetch_R8(targetName, pendingMedsList)
+    InventoryMutex:lock("R8-fetch")
+    local char = LocalPlayer.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not char or not root then InventoryMutex:unlock("R8-fetch"); return false end
+    ensureInRoom8()
+    local totalAmount, currentItems = checkTotalInventory()
+    if totalAmount >= Config.MaxInventory then
+        local reqCounts = {}
+        if pendingMedsList then
+            for _, o in ipairs(pendingMedsList) do reqCounts[o] = (reqCounts[o] or 0) + 1 end
+        end
+        local haveCounts    = {}
+        local itemToThrowAway = nil
+        for _, item in ipairs(currentItems) do
+            haveCounts[item.Name] = (haveCounts[item.Name] or 0) + 1
+            local needed = reqCounts[item.Name] or 0
+            if haveCounts[item.Name] > needed then itemToThrowAway = item end
+        end
+        if not itemToThrowAway then itemToThrowAway = currentItems[1] end
+        smartTrash_R8(itemToThrowAway)
+    end
+    local promptToUse = getPromptFromCache(targetName, false, _G.Room8_ItemCache, nil)
+    if not promptToUse then
+        for _, desc in ipairs(workspace:GetDescendants()) do
+            if desc:IsA("ProximityPrompt") then
+                local pName = desc.Parent and desc.Parent.Name or ""
+                local oText = desc.ObjectText or ""
+                local aText = desc.ActionText or ""
+                if pName == targetName or oText:match(targetName) or aText:match(targetName) then
+                    _G.Room8_ItemCache[targetName] = desc; promptToUse = desc; break
+                end
+            end
+        end
+    end
+    if promptToUse then
+        local hum     = char:FindFirstChild("Humanoid")
+        if hum then hum:UnequipTools() end
+        local itemPart = promptToUse.Parent:IsA("BasePart") and promptToUse.Parent or promptToUse.Parent:FindFirstChildWhichIsA("BasePart", true)
+        local dist     = itemPart and (root.Position - itemPart.Position).Magnitude or 0
+        local originalPos = root.CFrame
+        if dist > 14 and itemPart then
+            root.CFrame = itemPart.CFrame * CFrame.new(0, 3, 0)
+            root.AssemblyLinearVelocity = Vector3.zero
+            task.wait(0.05)
+        end
+        local oldReq  = promptToUse.RequiresLineOfSight
+        local oldDist = promptToUse.MaxActivationDistance
+        promptToUse.RequiresLineOfSight   = false
+        promptToUse.MaxActivationDistance = math.huge
+        promptToUse.HoldDuration          = 0
+        if type(fireproximityprompt) == "function" then fireproximityprompt(promptToUse, 1, true)
+        else promptToUse:InputHoldBegan() task.wait(0.05) promptToUse:InputHoldEnded() end
+        promptToUse.RequiresLineOfSight   = oldReq
+        promptToUse.MaxActivationDistance = oldDist
+        _G.Room8Auto_LastActionTick = tick()
+        task.wait(0.1)
+        if dist > 14 then root.CFrame = originalPos; root.AssemblyLinearVelocity = Vector3.zero; task.wait(0.05) end
+        InventoryMutex:unlock("R8-fetch")
+        return true
+    end
+    setStatus("GAGAL: " .. targetName .. " tidak ditemukan.", "R8")
+    InventoryMutex:unlock("R8-fetch")
+    return false
+end
+
+local function getPendingMedicinesRoom8(reportFolder)
+    local pending = {}
+    if not reportFolder then return pending end
+    local invFolder = reportFolder:FindFirstChild("inv")
+    if not invFolder then return pending end
+    for _, itemReq in ipairs(invFolder:GetChildren()) do
+        if table.find(ItemList, itemReq.Name) then
+            local checkMark = itemReq:FindFirstChild("check")
+            if not checkMark or (checkMark and checkMark.Visible == false) then table.insert(pending, itemReq.Name) end
+        end
+    end
+    return pending
+end
+
+local function isRoom8HealingDone(room8)
+    if not room8 then return false end
+    local ui      = room8:FindFirstChild("Minigame") and room8.Minigame:FindFirstChild("TV") and room8.Minigame.TV:FindFirstChild("Screen") and room8.Minigame.TV.Screen:FindFirstChild("UI")
+    local healing = ui and ui:FindFirstChild("Healing")
+    if healing and healing:IsA("GuiObject") and healing.Visible == true then return true end
+    return false
+end
+
+local function executeRoom8Treatment(room8, activeShift)
+    local minigame = room8:FindFirstChild("Minigame")
+    if not minigame or getShiftText() ~= activeShift then return end
+    setStatus("--- TURBO SURGERY R8 DIMULAI ---", "R8")
+    local root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if root then root.CFrame = EmergencyCFrames[8].Bed; root.AssemblyLinearVelocity = Vector3.zero end
+    local ui           = minigame:FindFirstChild("TV") and minigame.TV:FindFirstChild("Screen") and minigame.TV.Screen:FindFirstChild("UI")
+    local reportFolder = ui and ui:FindFirstChild("Report")
+    local treatmentText = reportFolder and reportFolder:FindFirstChild("treatment")
+    local bed          = minigame:FindFirstChild("Bed") and minigame.Bed:FindFirstChild("InBed")
+    setStatus("1/3 Menunggu fisik pasien di kasur...", "R8")
+    local targetNPC = nil
+    local waitNPC   = 0
+    -- FIXED: NPC wait max 8 detik (dari 20×0.5s = 10s)
+    -- Kalau tidak ada NPC valid dengan relevant PP dalam 8 detik = false positive, bail out
+    local waitNPC    = 0
+    local MAX_NPC_WAIT = math.floor(Config.R8_NPC_WaitMax / 0.5)
+    while not targetNPC and waitNPC < MAX_NPC_WAIT do
+        ensureInRoom8()
+        if getShiftText() ~= activeShift then return end
+
+        local found, foundPP = getPatientInEmergency(8, EmergencyCFrames[8].Bed, EmergencyCFrames[8].Radius)
+        if found then
+            targetNPC = found
+        else
+            -- Fallback radius lebih lebar, tapi HARUS punya PP aktif
+            if workspace:FindFirstChild("NPCs") then
+                for _, npc in ipairs(workspace.NPCs:GetChildren()) do
+                    local p = npc.PrimaryPart or npc:FindFirstChildWhichIsA("BasePart")
+                    if p and (p.Position - EmergencyCFrames[8].Bed.Position).Magnitude <= 20 then
+                        -- FIXED: Validasi punya PP aktif — bukan NPC yang lagi jalan keluar
+                        local hasActivePP = false
+                        for _, pp in ipairs(npc:GetDescendants()) do
+                            if pp:IsA("ProximityPrompt") and pp.Enabled then
+                                hasActivePP = true; break
+                            end
+                        end
+                        if hasActivePP then
+                            targetNPC = npc; break
+                        end
+                    end
+                end
+            end
+        end
+
+        if not targetNPC then
+            _G.Room8Auto_LastActionTick = tick()
+            task.wait(0.5); waitNPC = waitNPC + 1
+        end
+    end
+
+    if not targetNPC then
+        -- FIXED: Clear room8 entry di ER_Memory supaya tidak block
+        _G.ER_Memory[8] = nil
+        setStatus("BATAL: Tidak ada pasien valid di R8 (false positive). Kembali idle.", "R8")
+        isBotIdle_R8 = true
+        teleportToIdle()
+        return
+    end
+
+    setStatus("2/3 Menidurkan pasien...", "R8")
+
+    local function findSleepPP()
+        if bed then
+            local pp2 = bed:FindFirstChild("PP2")
+            if pp2 and pp2:IsA("ProximityPrompt") and pp2.Enabled then return pp2 end
+        end
+        for _, desc in ipairs(minigame:GetDescendants()) do
+            if desc:IsA("ProximityPrompt") and desc.Enabled then
+                local txt  = string.lower(desc.ActionText or "")
+                local name = string.lower(desc.Name or "")
+                if txt:match("sleep") or name == "pp2" or txt:match("anest") then return desc end
+            end
+        end
+        if targetNPC then
+            for _, desc in ipairs(targetNPC:GetDescendants()) do
+                if desc:IsA("ProximityPrompt") and desc.Enabled then
+                    local txt = string.lower(desc.ActionText or "")
+                    if txt:match("sleep") or txt:match("anest") then return desc end
+                end
+            end
+        end
+        return nil
+    end
+
+    local waitLimit   = 0
+    local MAX_SLEEP_WAIT = math.floor(Config.R8_SleepWaitMax / 0.3)
+    local noSleepCount = 0
+    while waitLimit < MAX_SLEEP_WAIT do
+        ensureInRoom8()
+        _G.Room8Auto_LastActionTick = tick()
+        if isRoom8HealingDone(room8) or getShiftText() ~= activeShift then return end
+        if treatmentText and treatmentText.Text == "BEGIN SURGERY:" then break end
+        if reportFolder and #getPendingMedicinesRoom8(reportFolder) > 0 then break end
+
+        local sleepPP = findSleepPP()
+        if sleepPP then
+            noSleepCount = 0
+            simpleInteract_R8(sleepPP, 0.1, false)
+        else
+            noSleepCount = noSleepCount + 1
+            setStatus("2/3 Menunggu Sleep PP muncul... (" .. math.floor(noSleepCount * 0.3) .. "s)", "R8")
+            -- FIXED: Kalau 6 detik tidak ada sleepPP sama sekali = NPC tidak valid
+            if noSleepCount >= math.floor(Config.R8_NoSleepBailout / 0.3) then
+                _G.ER_Memory[8] = nil
+                setStatus("BATAL: Sleep PP tidak muncul 6s — NPC tidak valid. Kembali idle.", "R8")
+                isBotIdle_R8 = true
+                teleportToIdle()
+                return
+            end
+        end
+        task.wait(0.3); waitLimit = waitLimit + 1
+    end
+    setStatus("3/3 Mulai Apply Treatment...", "R8")
+    local lastProgressTime = tick()
+    local anomalyHandled = false
+
+    while true do
+        task.wait(0.05)
+        _G.Room8Auto_LastActionTick = tick()
+        ensureInRoom8()
+        if getShiftText() ~= activeShift then setStatus("Shift berganti. Stop R8.", "R8"); break end
+        if isRoom8HealingDone(room8) then
+            setStatus("Surgery Selesai! Layar Hijau.", "R8")
+            -- Set memory pakai tick saja, TANPA instance NPC
+            -- Supaya erMemoryCheck tidak nunggu NPC keluar range dulu
+            _G.ER_Memory[8] = { patient = "done", tick = tick() }
+            clearAllMedItems()
+            isBotIdle_R8 = true
+            teleportToIdle()
+            break
+        end
+
+        local signLight = room8:FindFirstChild("MainSign") and room8.MainSign:FindFirstChild("Light")
+        if not signLight or (signLight.BrickColor.Name ~= "Crimson" and signLight.Color ~= Color3.fromRGB(165, 0, 0)) then break end
+        if tick() - lastProgressTime >= Config.StuckTimeout then setStatus("Local Loop Timeout R8. Skip.", "R8"); break end
+
+        -- Burns check
+        if targetNPC and targetNPC.Parent then
+            for _, desc in ipairs(targetNPC:GetDescendants()) do
+                if desc:IsA("ProximityPrompt") and desc.Enabled then
+                    local ppName = string.lower(desc.Name or "")
+                    local ppAct  = string.lower(desc.ActionText or "")
+                    if ppName == "firepp" or ppAct:match("burns") then
+                        local hasOintment = LocalPlayer.Backpack:FindFirstChild("Ointment") or LocalPlayer.Character:FindFirstChild("Ointment")
+                        if not hasOintment then smartFetch_R8("Ointment", {"Ointment"}) end
+                        ensureInRoom8()
+                        if safeEquip_R8("Ointment") then
+                            setStatus("R8: Mengoleskan Ointment (Burns)...", "R8")
+                            simpleInteract_R8(desc, 3, false)
+                            lastProgressTime = tick()
+                        end
+                        break
+                    end
+                end
+            end
+        end
+
+        local currentPending   = getPendingMedicinesRoom8(reportFolder)
+        local patientIsAnomaly = (not anomalyHandled) and Config.AnomalyKiller and (
+            (targetNPC and checkAnomalyStatus_Em(targetNPC, false))
+            or checkAnomalyStatus_Em(EmergencyCFrames[8].Bed.Position, true)
+        )
+
+        if patientIsAnomaly and #currentPending > 0 then
+            setStatus("!! ANOMALI R8 — Menyiapkan racun !!", "R8")
+            local wrongMedicine = findAndFetchWrongMedicine(currentPending, smartFetch_R8, "R8")
+            if wrongMedicine then
+                local hasItNow = LocalPlayer.Backpack:FindFirstChild(wrongMedicine) or LocalPlayer.Character:FindFirstChild(wrongMedicine)
+                if hasItNow then
+                    if bed and bed:FindFirstChild("PP") then
+                        ensureInRoom8()
+                        if safeEquip_R8(wrongMedicine) then
+                            anomalyHandled = true
+                            erMemorySet(8, targetNPC)
+                            isBotIdle_R8 = true
+                            setStatus("MENYUNTIKKAN RACUN: " .. wrongMedicine, "R8")
+                            simpleInteract_R8(bed.PP, 0.1, true)
+                            lastProgressTime = tick()
+                            task.wait(1.5)
+                            setStatus("--- ANOMALI R8 HANGUS! ---", "R8")
+                            clearAllMedItems()
+                            isBotIdle_R8 = false
+                            break
+                        else setStatus("FAILSAFE: Gagal pegang racun.", "R8"); task.wait(0.5) end
+                    end
+                else setStatus("Racun tidak masuk inventory, coba ulang...", "R8"); task.wait(0.5) end
+            else setStatus("Semua kandidat racun R8 habis stok! Tunggu...", "R8"); task.wait(2) end
+        else
+            if #currentPending == 0 then continue end
+            local reqCounts = {}
+            for _, obat in ipairs(currentPending) do reqCounts[obat] = (reqCounts[obat] or 0) + 1 end
+            local _, currentItems = checkTotalInventory()
+            local haveCounts = {}
+            for _, item in ipairs(currentItems) do haveCounts[item.Name] = (haveCounts[item.Name] or 0) + 1 end
+            local isMissingItems = false
+            for obat, needed in pairs(reqCounts) do
+                local have = haveCounts[obat] or 0
+                if have < needed then
+                    for i = 1, (needed - have) do
+                        setStatus("Telekinesis: " .. obat .. " (" .. (have + i) .. "/" .. needed .. ")", "R8")
+                        smartFetch_R8(obat, currentPending)
+                        isMissingItems = true
+                    end
+                end
+            end
+            if isMissingItems then task.wait(0.1) end
+            local obatToInject = currentPending[1]
+            local hasItNow     = LocalPlayer.Backpack:FindFirstChild(obatToInject) or LocalPlayer.Character:FindFirstChild(obatToInject)
+            if hasItNow then
+                local applyPP = bed and bed:FindFirstChild("PP")
+                if not applyPP then
+                    for _, desc in ipairs(minigame:GetDescendants()) do
+                        if desc:IsA("ProximityPrompt") and desc.Enabled then
+                            local name = string.lower(desc.Name or "")
+                            local txt  = string.lower(desc.ActionText or "")
+                            if name == "pp" or txt:match("inject") or txt:match("apply") or txt:match("treat") then
+                                applyPP = desc; break
+                            end
+                        end
+                    end
+                end
+                if not applyPP and targetNPC then
+                    for _, desc in ipairs(targetNPC:GetDescendants()) do
+                        if desc:IsA("ProximityPrompt") and desc.Enabled then
+                            applyPP = desc; break
+                        end
+                    end
+                end
+                if applyPP then
+                    ensureInRoom8()
+                    if safeEquip_R8(obatToInject) then
+                        task.wait(0.2)
+                        local previousPendingCount = #currentPending
+                        setStatus("Menerapkan: " .. obatToInject, "R8")
+                        simpleInteract_R8(applyPP, 0.1, true)
+                        lastProgressTime = tick()
+                        setStatus("Menunggu obat terproses di TV...", "R8")
+                        local waitCheckLimit = 0
+                        while waitCheckLimit < 30 do
+                            local newPending = getPendingMedicinesRoom8(reportFolder)
+                            if #newPending < previousPendingCount then break end
+                            if isRoom8HealingDone(room8) or getShiftText() ~= activeShift then break end
+                            task.wait(0.05)
+                            waitCheckLimit = waitCheckLimit + 1
+                            _G.Room8Auto_LastActionTick = tick()
+                        end
+                    else setStatus("FAILSAFE: Gagal pegang " .. obatToInject, "R8"); task.wait(0.5) end
+                end
+            else setStatus("Gagal Telekinesis " .. obatToInject, "R8"); task.wait(0.5) end
+        end
+    end
+end
+
+local function botCycleRoom8()
+    local activeShift = getShiftText()
+    if activeShift == "" or not activeShift or activeShift:match("Istirahat") then
+        if not isBotIdle_R8 then teleportToIdle(); isBotIdle_R8 = true end
+        setStatus("Istirahat/Luar Shift...", "R8")
+        task.wait(2); return
+    end
+    local room8 = getEmergencyRoom(8)
+    local roomActive = nil
+    if room8 and not isRoom8HealingDone(room8) then
+        local npcFound, _ = getPatientInEmergency(8, EmergencyCFrames[8].Bed, EmergencyCFrames[8].Radius)
+        if npcFound then
+            roomActive = room8
+        else
+            local minigame8     = room8:FindFirstChild("Minigame")
+            local ui8           = minigame8 and minigame8:FindFirstChild("TV") and minigame8.TV:FindFirstChild("Screen") and minigame8.TV.Screen:FindFirstChild("UI")
+            local reportFolder8 = ui8 and ui8:FindFirstChild("Report")
+            if reportFolder8 and #getPendingMedicinesRoom8(reportFolder8) > 0 then
+                roomActive = room8
+            end
+        end
+    end
+    if roomActive then
+        local currentNPC_R8, _ = getPatientInEmergency(8, EmergencyCFrames[8].Bed, EmergencyCFrames[8].Radius)
+        if erMemoryCheck(8, currentNPC_R8) then
+            if not isBotIdle_R8 then teleportToIdle(); isBotIdle_R8 = true end
+            setStatus("R8: Menunggu pasien lama pergi...", "R8")
+            task.wait(1)
+            return
+        end
+        isBotIdle_R8 = false
+        pcall(function() executeRoom8Treatment(roomActive, activeShift) end)
+    else
+        if not isBotIdle_R8 then teleportToIdle(); isBotIdle_R8 = true end
+        setStatus("Menunggu Kasus R8 (" .. tostring(activeShift) .. ")...", "R8")
+        task.wait(Config.ScanDelay)
+    end
+end
+
+-- ==========================================
+-- MASTER WORKER
+-- ==========================================
+local masterRunning  = false
+local masterLastTick = tick()
+local masterWorker   = nil
+
+local function getActiveEmergencyRoom()
+    if autoEnabled_R6 then
+        local act6, _, _ = isR6ReallyActive()
+        if act6 then
+            local npc6, _ = getPatientInEmergency(6, EmergencyCFrames[6].Patient, EmergencyCFrames[6].Radius)
+            if not erMemoryCheck(6, npc6) then return 6 end
+        end
+    end
+    if isAutoPlaying_R7 then
+        local room7, _ = checkRoom7Status()
+        if room7 then return 7 end
+    end
+    if autoEnabled_R8 then
+        local room8 = getEmergencyRoom(8)
+        if room8 and not isRoom8HealingDone(room8) then
+            local npc8, _ = getPatientInEmergency(8, EmergencyCFrames[8].Bed, EmergencyCFrames[8].Radius)
+            if npc8 and not erMemoryCheck(8, npc8) then return 8 end
+            local mini8 = room8:FindFirstChild("Minigame")
+            local ui8   = mini8 and mini8:FindFirstChild("TV") and mini8.TV:FindFirstChild("Screen") and mini8.TV.Screen:FindFirstChild("UI")
+            local rep8  = ui8 and ui8:FindFirstChild("Report")
+            if rep8 and #getPendingMedicinesRoom8(rep8) > 0 then return 8 end
+        end
+    end
+    return nil
+end
+
+-- ==========================================
+-- FIXED: Full state flush helper
+-- Dipakai oleh idle timeout dan watchdog
+-- ==========================================
+local function fullStateFlush(reason)
+    if Config.ShowConsoleLogs then
+        print("[FullFlush] Triggered: " .. tostring(reason))
+    end
+    -- Kill worker dulu sebelum reset state
+    masterRunning = false
+    if masterWorker then
+        pcall(function() task.cancel(masterWorker) end)
+        masterWorker = nil
+    end
+    task.wait(0.2)
+
+    -- Reset semua state flags
+    BuggedRoomBlacklist          = {}
+    _G.AutoDoctor_RoomMemory     = {}
+    erMemoryReset()
+    _G.AutoDoctor_IsIdle         = false
+    _G.Room6_IsIdle              = false
+    _G.AutoRoom7_IsIdle          = false
+    isBotIdle_R8                 = false
+    _G.AutoRoom7_BlacklistTime   = 0
+    _G.IdleStartTick             = nil
+    isBusy_Medical               = false
+    InventoryMutex._locked       = false
+    InventoryMutex._owner        = nil
+    masterLastTick               = tick()
+
+    -- Teleport ke idle position dulu
+    teleportToIdle()
+    task.wait(0.3)
+end
+
+local function masterCycle()
+    local activeShift = getShiftText() or "Shift Aktif"
+    masterLastTick    = tick()
+
+    local fireNPC, firePP = getFireEmergency_Med()
+    if fireNPC then
+        _G.AutoDoctor_IsIdle = false; _G.IdleStartTick = nil
+        setStatus("! P1: Memadamkan Pasien Terbakar !")
+        unequipAll()
+        local targetNode = fireNPC.PrimaryPart or fireNPC:FindFirstChildWhichIsA("BasePart")
+        simpleInteract_Med(firePP, 3.2, targetNode)
+        task.wait(1.5)
+        return
+    end
+
+    local faintedPart, carryPP = getFaintedPatient_Med()
+    if faintedPart then
+        _G.AutoDoctor_IsIdle = false; _G.IdleStartTick = nil
+        setStatus("! P2: Mengurus Pasien Pingsan !")
+        pcall(function() processFaintedPatient_Med(faintedPart, carryPP, activeShift) end)
+        return
+    end
+    local placePrompt, targetRoomName, targetRoomNum, targetRoomPath = getPlacePatientPrompt_Med()
+    if placePrompt then
+        _G.AutoDoctor_IsIdle = false; _G.IdleStartTick = nil
+        setStatus("P2: Menaruh pasien ke " .. tostring(targetRoomName) .. "...")
+        unequipAll()
+        if targetRoomNum and targetRoomPath then
+            teleportToRoomCenter(targetRoomNum, targetRoomPath)
+            task.wait(0.3)
+        else
+            teleportToTarget(placePrompt)
+            task.wait(0.2)
+        end
+        for placeTry = 1, 5 do
+            simpleInteract_Med(placePrompt, 1, false)
+            task.wait(0.8)
+            if not placePrompt.Parent or not placePrompt.Enabled then
+                setStatus("✅ Pasien berhasil ditempatkan di " .. tostring(targetRoomName))
+                break
+            end
+            teleportToTarget(placePrompt)
+            task.wait(0.2)
+        end
+        return
+    end
+
+    local erRoom = getActiveEmergencyRoom()
+    if erRoom == 6 then
+        _G.AutoDoctor_IsIdle = false; _G.IdleStartTick = nil
+        pcall(executeRoom6)
+        return
+    end
+    if erRoom == 7 then
+        _G.AutoDoctor_IsIdle = false; _G.IdleStartTick = nil
+        local room7, _ = checkRoom7Status()
+        if room7 then pcall(function() executeRoom7(room7, activeShift) end) end
+        return
+    end
+    if erRoom == 8 then
+        _G.AutoDoctor_IsIdle = false; _G.IdleStartTick = nil
+        pcall(botCycleRoom8)
+        return
+    end
+
+    if autoScanEnabled then
+        local room, roomNum = findActiveRoom_Med()
+        if room and roomNum then
+            _G.AutoDoctor_IsIdle = false; _G.IdleStartTick = nil
+            pcall(function() executeTreatmentCore_Med(room, roomNum, activeShift) end)
+            return
+        end
+    end
+
+    local anyOn = autoScanEnabled or autoEnabled_R6 or isAutoPlaying_R7 or autoEnabled_R8
+    if anyOn then
+        if not _G.AutoDoctor_IsIdle then
+            unequipAll(); teleportToIdle()
+            _G.AutoDoctor_IsIdle  = true
+            _G.Room6_IsIdle       = true
+            _G.AutoRoom7_IsIdle   = true
+            isBotIdle_R8          = true
+            _G.IdleStartTick      = tick()
+        end
+
+        -- ==========================================
+        -- FIXED: Idle timeout — full flush + clean restart
+        -- ==========================================
+        if Config.IdleTimeout > 0 and _G.IdleStartTick then
+            local idleDuration = tick() - _G.IdleStartTick
+            if idleDuration >= Config.IdleTimeout then
+                setStatus("Idle timeout (" .. Config.IdleTimeout .. "s) — paksa re-scan semua room...")
+                fullStateFlush("IdleTimeout")
+                task.wait(0.5)
+                -- Restart worker dengan state bersih
+                local anyEnabled = autoScanEnabled or autoEnabled_R6 or isAutoPlaying_R7 or autoEnabled_R8
+                if anyEnabled then
+                    masterRunning = true
+                    masterWorker  = task.spawn(function()
+                        while masterRunning do
+                            local ok, err = pcall(masterCycle)
+                            if not ok then
+                                warn("[Master] Error setelah flush: " .. tostring(err))
+                                task.wait(2)
+                            end
+                            task.wait(0.1)
+                        end
+                    end)
+                end
+                return
+            end
+        end
+
+        setStatus("Idle — memantau semua room...")
+    end
+    task.wait(Config.ScanDelay)
+end
+
+local function startMasterWorker()
+    if masterWorker then
+        pcall(function() task.cancel(masterWorker) end)
+        masterWorker = nil
+    end
+    masterRunning = true
+    masterWorker  = task.spawn(function()
+        while masterRunning do
+            local anyEnabled = autoScanEnabled or autoEnabled_R6 or isAutoPlaying_R7 or autoEnabled_R8
+            if anyEnabled then
+                local ok, err = pcall(masterCycle)
+                if not ok then
+                    warn("[Master] Error: " .. tostring(err))
+                    task.wait(2)
+                end
+            else
+                task.wait(0.5)
+            end
+            task.wait(0.1)
+        end
+    end)
+end
+
+local function stopMasterWorker()
+    masterRunning = false
+    if masterWorker then
+        pcall(function() task.cancel(masterWorker) end)
+        masterWorker = nil
+    end
+end
+
+local masterWatchdog = nil
+local function startMasterWatchdog()
+    if masterWatchdog then
+        pcall(function() task.cancel(masterWatchdog) end)
+        masterWatchdog = nil
+    end
+    local lastShift_w      = getShiftText()
+    local lastShiftNum_w   = getShiftNumber()
+    local lastShiftChangeTick = tick()
+    local idleWithNPCStart    = nil
+
+    masterWatchdog = task.spawn(function()
+        while true do
+            task.wait(1)
+
+            -- Jangan watchdog kalau tidak ada yang enabled
+            local anyEnabled = autoScanEnabled or autoEnabled_R6 or isAutoPlaying_R7 or autoEnabled_R8
+            if not anyEnabled then continue end
+
+            local currentShift    = getShiftText()
+            local currentShiftNum = getShiftNumber()
+
+            local isShiftChanged = (currentShift ~= lastShift_w
+                and currentShift ~= nil and lastShift_w ~= nil
+                and currentShift ~= "Shift Aktif")
+
+            if isShiftChanged then
+                setStatus("Shift Berganti ke " .. tostring(currentShift) .. "! Reset inventory & memory...")
+                Config.MaxInventory      = 5
+                idleWithNPCStart         = nil
+                fullStateFlush("ShiftChange")
+                lastShift_w           = currentShift
+                lastShiftNum_w        = currentShiftNum
+                lastShiftChangeTick   = tick()
+                task.wait(2)
+                startMasterWorker()
+                continue
+            end
+
+            -- ==========================================
+            -- FIXED: Hard stuck detection — full flush + clean restart
+            -- ==========================================
+            local isHardStuck = masterRunning and (tick() - masterLastTick > Config.GlobalStuckTimeout)
+            if isHardStuck then
+                setStatus("MASTER STUCK! Hard-Reset...")
+                idleWithNPCStart = nil
+                fullStateFlush("HardStuck")
+                task.wait(2)
+                startMasterWorker()
+                continue
+            end
+
+            -- ==========================================
+            -- FIXED: Idle + NPC terdeteksi watchdog
+            -- Kalau idle tapi ada NPC, flush state dan restart bersih
+            -- ==========================================
+            if _G.AutoDoctor_IsIdle then
+                local hasNPCInRadar = false
+                if workspace:FindFirstChild("NPCs") then
+                    for _, npc in ipairs(workspace.NPCs:GetChildren()) do
+                        local p = npc.PrimaryPart or npc:FindFirstChildWhichIsA("BasePart")
+                        if not p then continue end
+                        local roomsFolder   = workspace:FindFirstChild("Rooms")
+                        local medicalFolder = roomsFolder and roomsFolder:FindFirstChild("Medical")
+                        if medicalFolder and autoScanEnabled then
+                            for i = 1, Config.MaxRooms do
+                                local room = medicalFolder:FindFirstChild("Room" .. i)
+                                local bed  = room and room:FindFirstChild("Minigame") and room.Minigame:FindFirstChild("Bed") and room.Minigame.Bed:FindFirstChild("InBed")
+                                local center = (bed and bed.Position) or (RoomCFrames[i] and RoomCFrames[i].Position)
+                                if center and (p.Position - center).Magnitude <= Config.PatientBedRadius then
+                                    -- Skip kalau room masih di memory atau blacklist
+                                    local inMem   = _G.AutoDoctor_RoomMemory[i] ~= nil
+                                    local inBlack = BuggedRoomBlacklist[i] and (tick() - BuggedRoomBlacklist[i] < Config.BlacklistDuration)
+                                    if not inMem and not inBlack then
+                                        hasNPCInRadar = true; break
+                                    end
+                                end
+                            end
+                        end
+                        if hasNPCInRadar then break end
+                        if autoEnabled_R6 and (p.Position - EmergencyCFrames[6].Patient.Position).Magnitude <= EmergencyCFrames[6].Radius then
+                            if not erMemoryCheck(6, npc) then hasNPCInRadar = true; break end
+                        end
+                        if isAutoPlaying_R7 and (p.Position - EmergencyCFrames[7].Step2.Position).Magnitude <= EmergencyCFrames[7].Radius then
+                            if not erMemoryCheck(7, npc) then hasNPCInRadar = true; break end
+                        end
+                        if autoEnabled_R8 and (p.Position - EmergencyCFrames[8].Bed.Position).Magnitude <= EmergencyCFrames[8].Radius + 10 then
+                            if not erMemoryCheck(8, npc) then hasNPCInRadar = true; break end
+                        end
+                    end
+                end
+
+                if hasNPCInRadar then
+                    if not idleWithNPCStart then
+                        idleWithNPCStart = tick()
+                    elseif tick() - idleWithNPCStart >= 15 then
+                        -- FIXED: 15 detik cukup — kalau lebih lama dari itu berarti memang stuck
+                        setStatus("⚠️ Idle 15s tapi ada NPC valid! Full flush & restart...")
+                        idleWithNPCStart = nil
+                        fullStateFlush("IdleWithNPC")
+                        task.wait(1)
+                        startMasterWorker()
+                    end
+                else
+                    idleWithNPCStart = nil
+                end
+            else
+                idleWithNPCStart = nil
+            end
+
+            if currentShift then lastShift_w = currentShift end
+            if currentShiftNum then lastShiftNum_w = currentShiftNum end
+        end
+    end)
+end
+
+-- ==========================================
+-- GUI BUTTON EVENTS
+-- ==========================================
+local function refreshButtonVisuals()
+    if autoScanEnabled then
+        BtnToggleMedical.Text = "⏹  Auto-Scan Medical: ON"
+        BtnToggleMedical.BackgroundColor3 = Color3.fromRGB(30, 130, 70)
+    else
+        BtnToggleMedical.Text = "▶  Auto-Scan Medical: OFF"
+        BtnToggleMedical.BackgroundColor3 = Color3.fromRGB(60, 65, 70)
+    end
+    if autoEnabled_R6 then
+        BtnToggleR6.Text = "⏹  Auto R6: ON"
+        BtnToggleR6.BackgroundColor3 = tabColors["R6"]
+    else
+        BtnToggleR6.Text = "▶  Auto R6: OFF"
+        BtnToggleR6.BackgroundColor3 = Color3.fromRGB(60, 65, 70)
+    end
+    if isAutoPlaying_R7 then
+        BtnToggleR7.Text = "⏹  Auto R7: ON"
+        BtnToggleR7.BackgroundColor3 = tabColors["R7"]
+    else
+        BtnToggleR7.Text = "▶  Auto R7: OFF"
+        BtnToggleR7.BackgroundColor3 = Color3.fromRGB(60, 65, 70)
+    end
+    if autoEnabled_R8 then
+        BtnToggleR8.Text = "⏹  Auto R8: ON"
+        BtnToggleR8.BackgroundColor3 = tabColors["R8"]
+    else
+        BtnToggleR8.Text = "▶  Auto R8: OFF"
+        BtnToggleR8.BackgroundColor3 = Color3.fromRGB(60, 65, 70)
+    end
+end
+
+CloseBtn.MouseButton1Click:Connect(function()
+    autoScanEnabled = false; autoEnabled_R6 = false; isAutoPlaying_R7 = false; autoEnabled_R8 = false
+    isRadarVisible  = false; stopColorTracker = true
+    stopMasterWorker()
+    if masterWatchdog then pcall(function() task.cancel(masterWatchdog) end) end
+    InventoryMutex._locked = false; InventoryMutex._owner = nil
+    pcall(function() if _G.AutoDoctor_RadarLoop then task.cancel(_G.AutoDoctor_RadarLoop) end end)
+    pcall(function() if _G.AutoDoctor_NotifLoop then _G.AutoDoctor_NotifLoop:Disconnect() end end)
+    for _, conn in ipairs(minigameConnections) do pcall(function() conn:Disconnect() end) end
+    if _G.AutoDoctor_Radars then
+        for _, radar in pairs(_G.AutoDoctor_Radars) do if radar then pcall(function() radar:Destroy() end) end end
+    end
+    ScreenGui:Destroy()
+end)
+
+local function toggleRadar(btn)
+    isRadarVisible = not isRadarVisible
+    if isRadarVisible then
+        btn.Text = "📡 RADAR: ON"; btn.BackgroundColor3 = Color3.fromRGB(30, 130, 70)
+    else
+        btn.Text = "📡 RADAR: OFF"; btn.BackgroundColor3 = Color3.fromRGB(60, 65, 70)
+        for _, radar in pairs(_G.AutoDoctor_Radars) do if radar then radar:Destroy() end end
+        _G.AutoDoctor_Radars = {}
+    end
+    for _, rb in ipairs({BtnRadarMedical, BtnRadarR6, BtnRadarR7, BtnRadarR8}) do
+        rb.Text = "📡 RADAR: " .. (isRadarVisible and "ON" or "OFF")
+        rb.BackgroundColor3 = isRadarVisible and Color3.fromRGB(30, 130, 70) or Color3.fromRGB(60, 65, 70)
+    end
+end
+BtnRadarMedical.MouseButton1Click:Connect(function() toggleRadar(BtnRadarMedical) end)
+BtnRadarR6.MouseButton1Click:Connect(function() toggleRadar(BtnRadarR6) end)
+BtnRadarR7.MouseButton1Click:Connect(function() toggleRadar(BtnRadarR7) end)
+BtnRadarR8.MouseButton1Click:Connect(function() toggleRadar(BtnRadarR8) end)
+
+BtnToggleMedical.MouseButton1Click:Connect(function()
+    autoScanEnabled = not autoScanEnabled
+    if autoScanEnabled then
+        BuggedRoomBlacklist = {}; _G.AutoDoctor_RoomMemory = {}; _G.AutoDoctor_IsIdle = false
+        setStatus("Medical ON.")
+        if not masterRunning then startMasterWorker(); startMasterWatchdog() end
+    else
+        setStatus("Medical OFF.")
+    end
+    refreshButtonVisuals()
+end)
+
+BtnScanOnceMedical.MouseButton1Click:Connect(function()
+    if masterRunning then setStatus("Hentikan semua dulu untuk mode manual!"); return end
+    task.spawn(function() pcall(botCycle_Med); teleportToIdle(); setStatus("Manual Medical Selesai.") end)
+end)
+
+BtnToggleR6.MouseButton1Click:Connect(function()
+    autoEnabled_R6 = not autoEnabled_R6
+    if autoEnabled_R6 then
+        _G.ER_Memory[6] = nil; _G.Room6_IsIdle = false
+        setStatus("R6 ON.", "R6")
+        if not masterRunning then startMasterWorker(); startMasterWatchdog() end
+    else
+        setStatus("R6 OFF.", "R6")
+    end
+    refreshButtonVisuals()
+end)
+
+BtnForceR6.MouseButton1Click:Connect(function()
+    forceFailMinigame_R6(); setStatus("Force Fail R6!", "R6")
+end)
+
+BtnToggleR7.MouseButton1Click:Connect(function()
+    isAutoPlaying_R7 = not isAutoPlaying_R7
+    if isAutoPlaying_R7 then
+        _G.ER_Memory[7] = nil; _G.AutoRoom7_IsIdle = false; _G.AutoRoom7_BlacklistTime = 0
+        setStatus("R7 ON.", "R7")
+        if not masterRunning then startMasterWorker(); startMasterWatchdog() end
+    else
+        setStatus("R7 OFF.", "R7")
+    end
+    refreshButtonVisuals()
+end)
+
+BtnToggleR8.MouseButton1Click:Connect(function()
+    autoEnabled_R8 = not autoEnabled_R8
+    if autoEnabled_R8 then
+        _G.ER_Memory[8] = nil; isBotIdle_R8 = false
+        setStatus("R8 ON.", "R8")
+        if not masterRunning then startMasterWorker(); startMasterWatchdog() end
+    else
+        setStatus("R8 OFF.", "R8")
+    end
+    refreshButtonVisuals()
+end)
+
+BtnScanOnceR8.MouseButton1Click:Connect(function()
+    if masterRunning then setStatus("Hentikan semua dulu untuk mode manual!", "R8"); return end
+    task.spawn(function() pcall(botCycleRoom8); teleportToIdle(); setStatus("Manual R8 Selesai.", "R8") end)
+end)
+
+local isMinimized = false
+MinimizeBtn.MouseButton1Click:Connect(function()
+    isMinimized = not isMinimized
+    if isMinimized then
+        MainFrame.Size = UDim2.new(0, 300, 0, 34)
+        TabBar.Visible = false; ContentArea.Visible = false
+        MinimizeBtn.Text = "+"
+    else
+        MainFrame.Size = UDim2.new(0, 300, 0, 310)
+        TabBar.Visible = true; ContentArea.Visible = true
+        MinimizeBtn.Text = "—"
+    end
+end)
+
+-- ==========================================
+-- AUTO-START
+-- ==========================================
+task.defer(function()
+    task.wait(1)
+    local anyStart = false
+    if Config.AutoStart_Medical then autoScanEnabled = true; anyStart = true; BuggedRoomBlacklist = {}; _G.AutoDoctor_RoomMemory = {} end
+    if Config.AutoStart_R6      then autoEnabled_R6  = true; anyStart = true; _G.ER_Memory[6] = nil end
+    if Config.AutoStart_R7      then isAutoPlaying_R7 = true; anyStart = true; _G.ER_Memory[7] = nil end
+    if Config.AutoStart_R8      then autoEnabled_R8  = true; anyStart = true; _G.ER_Memory[8] = nil end
+    if anyStart then
+        refreshButtonVisuals()
+        erMemoryReset()
+        startMasterWorker()
+        startMasterWatchdog()
+        print("[AutoStart] Master worker aktif — Medical R1-5 + Emergency R6/R7/R8")
+    end
+end)
+
+print("✅ [Auto Doctor Combined] Loaded! Idle Timeout Fixed + Full State Flush — All Rooms.")
