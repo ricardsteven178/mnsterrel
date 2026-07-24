@@ -219,7 +219,7 @@ trackerHeader.Parent = textContainer
 local statsLabel = Instance.new("TextLabel")
 statsLabel.Size = UDim2.new(0.65, 0, 0.42, 0)
 statsLabel.AnchorPoint = Vector2.new(0.5, 0)
-statsLabel.Position = UDim2.new(0.55, 0, 0.42, 0)
+statsLabel.Position = UDim2.new(0.5, 0, 0.37, 0)
 statsLabel.BackgroundTransparency = 1
 statsLabel.Text = "Loading Data..."
 statsLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
@@ -508,9 +508,10 @@ end
 -- ==================== MAIN LOOP ====================
 task.spawn(function()
     while true do
-    updateDataVariables()
+        -- Data selalu update regardless toggle state (supaya gak miss shift pas OFF)
+        updateDataVariables()
 
-    if isOptimized then
+        if isOptimized then
             local totalPlaytime    = formatPlaytime(os.time() - scriptStartTime)
             local currentShiftTime = formatShiftTime(os.time() - currentShiftStartTime)
 
