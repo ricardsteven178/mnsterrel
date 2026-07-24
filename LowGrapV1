@@ -508,9 +508,9 @@ end
 -- ==================== MAIN LOOP ====================
 task.spawn(function()
     while true do
-        if isOptimized then
-            updateDataVariables()
+    updateDataVariables()
 
+    if isOptimized then
             local totalPlaytime    = formatPlaytime(os.time() - scriptStartTime)
             local currentShiftTime = formatShiftTime(os.time() - currentShiftStartTime)
 
