@@ -44,10 +44,10 @@ local Config = {
     -- AUTO-START: Aktifkan modul otomatis saat script diload
     -- true = langsung jalan, false = manual tekan tombol
     -- ==========================================
-    AutoStart_Medical   = true,     -- Room 1-5 Medical Wing
-    AutoStart_R6        = true,     -- Room 6 Emergency
-    AutoStart_R7        = true,     -- Room 7 Emergency
-    AutoStart_R8        = true,     -- Room 8 Emergency Surgery
+    AutoStart_Medical   = false,     -- Room 1-5 Medical Wing
+    AutoStart_R6        = false,     -- Room 6 Emergency
+    AutoStart_R7        = false,     -- Room 7 Emergency
+    AutoStart_R8        = false,     -- Room 8 Emergency Surgery
 
     -- ==========================================
     -- FITUR UTAMA
@@ -2675,31 +2675,49 @@ local function findInBedPP_R7(minigame, currentPatient)
     if bed then
         local inBed = bed:FindFirstChild("InBed")
         if inBed then
+            -- Prioritas 1: PP langsung (nama "PP", action "Apply Treatment")
+            local directPP = inBed:FindFirstChild("PP")
+            if directPP and directPP:IsA("ProximityPrompt") then return directPP end
+            -- Prioritas 2: PP2 fallback (nama lama)
+            local directPP2 = inBed:FindFirstChild("PP2")
+            if directPP2 and directPP2:IsA("ProximityPrompt") then return directPP2 end
+            -- Prioritas 3: scan semua descendant InBed, cocokkan nama atau action
             for _, pp in ipairs(inBed:GetDescendants()) do
-                if pp:IsA("ProximityPrompt") then return pp end
+                if pp:IsA("ProximityPrompt") then
+                    local name = string.lower(pp.Name or "")
+                    local act  = string.lower(pp.ActionText or "")
+                    if name == "pp" or name == "pp2"
+                    or act:match("apply") or act:match("inject") or act:match("treat") or act:match("prepare") then
+                        return pp
+                    end
+                end
             end
-            local pp = inBed:FindFirstChildWhichIsA("ProximityPrompt")
-            if pp then return pp end
+            -- Prioritas 4: ambil ProximityPrompt pertama apapun di InBed
+            local anyPP = inBed:FindFirstChildWhichIsA("ProximityPrompt")
+            if anyPP then return anyPP end
         end
+        -- Prioritas 5: scan seluruh Bed
         for _, pp in ipairs(bed:GetDescendants()) do
             if pp:IsA("ProximityPrompt") and pp.Enabled then return pp end
         end
     end
+    -- Prioritas 6: scan seluruh minigame, cocokkan nama atau action
     for _, pp in ipairs(minigame:GetDescendants()) do
         if pp:IsA("ProximityPrompt") then
             local name = string.lower(pp.Name or "")
             local act  = string.lower(pp.ActionText or "")
-            if name == "pp" or name == "inbedpp" or name:match("bed")
-            or act:match("inject") or act:match("apply") or act:match("treat") or act:match("use") then
+            if name == "pp" or name == "pp2" or name == "inbedpp" or name:match("bed")
+            or act:match("apply") or act:match("inject") or act:match("treat") or act:match("use") or act:match("prepare") then
                 return pp
             end
         end
     end
+    -- Prioritas 7: scan dari NPC langsung
     if currentPatient then
         for _, pp in ipairs(currentPatient:GetDescendants()) do
             if pp:IsA("ProximityPrompt") and pp.Enabled then
                 local act = string.lower(pp.ActionText or "")
-                if act:match("inject") or act:match("apply") or act:match("treat") then
+                if act:match("apply") or act:match("inject") or act:match("treat") or act:match("prepare") then
                     return pp
                 end
             end
