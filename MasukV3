@@ -260,8 +260,7 @@ local function runAutoRoom(log)
     log("Entered Room "..room.id.." ✓")
     task.wait(0.8)
 
-    -- Skip Dialogue
--- Skip Dialogue — poll sampai Disable.Visible true (Leader tag dari server)
+    -- Skip Dialogue — hanya kalau Disable button muncul (shift >= 4 di server)
     if CONFIG.SKIP_DOCTOR_DIALOGUE then
         local checkmark = nil
         local waited = 0
@@ -277,18 +276,18 @@ local function runAutoRoom(log)
                     checkmark = img and img:FindFirstChild("Checkmark")
                 end
             end
-        until checkmark ~= nil or waited >= 10
+        until checkmark ~= nil or waited >= 5
 
         if checkmark then
             pcall(function() checkmark.Visible = true end)
             task.wait(0.1)
+            pcall(function()
+                RS.Util.Net["RE/SetDoctorDialogueSkipped"]:FireServer(true)
+            end)
+            log("Skip Dialogue ✓")
+        else
+            log("Skip Dialogue N/A (shift too low), skipping...")
         end
-
-        -- Jalur yang confirmed work dari debugger
-        pcall(function()
-            RS.Util.Net["RE/SetDoctorDialogueSkipped"]:FireServer(true)
-        end)
-        log("Skip Dialogue ✓")
     end
 
     -- Wait for target players dengan live status
