@@ -1,0 +1,615 @@
+-- ============================================================
+--  AUTO-ROOM SMART JOINER v2.0
+--  by Axiom
+-- ============================================================
+
+if _G.AutoRoomRunning then
+    warn("[AutoRoom] Already running.")
+    return
+end
+_G.AutoRoomRunning = true
+
+-- ============================================================
+--  CONFIG
+-- ============================================================
+local CONFIG = {
+    TARGET_PLAYERS       = 2, 
+    SKIP_DOCTOR_DIALOGUE = true, 
+    CHECK_TOP_SHIFT      = true,
+    TOP_SHIFT_MIN        = 10,
+    RANDOM_ROOM          = false,
+    LOOP_DELAY           = 1.5,
+    WAIT_TIMEOUT         = 120,
+    AUTO_START           = true, -- true = auto langsung jalan saat script dieksekusi atau false = script diam dulu, tekan START manual
+    START_MINIMIZED      = false, -- true = panel langsung terminimize saat script dieksekusi atau  false = panel langsung terbuka
+    START_DELAY          = 5, -- Jeda (detik) setelah checkmark / setelah player terpenuhi sebelum tekan START
+    JOIN_EXISTING        = false,    -- true = boleh join room yang sudah ada pemain (waiting) asal count < TARGET_PLAYERS atau false = hanya join room yang benar-benar kosong (0/4)
+}
+
+-- ============================================================
+--  ROOM DATA
+-- ============================================================
+local ROOMS = {
+    { id = 3, cframe = CFrame.new(-90.7799225, 20.9798355, -40.8240433) },
+    { id = 2, cframe = CFrame.new(-87.7799454, 20.9798355, -66.5740433) },
+    { id = 1, cframe = CFrame.new(-92.5799408, 20.9798355, -99.0240479) },
+}
+
+-- ============================================================
+--  SERVICES
+-- ============================================================
+local Players          = game:GetService("Players")
+local RS               = game:GetService("ReplicatedStorage")
+local TweenService     = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer      = Players.LocalPlayer
+local Workspace        = game:GetService("Workspace")
+
+-- ============================================================
+--  UTILITY
+-- ============================================================
+local function safeGet(root, path)
+    local cur = root
+    for _, key in ipairs(path) do
+        if cur == nil then return nil end
+        local ok, res = pcall(function() return cur[key] end)
+        if not ok or res == nil then return nil end
+        cur = res
+    end
+    return cur
+end
+
+local function getRoomNode(id)
+    return safeGet(Workspace, {"Rooms", "Room"..id})
+end
+
+local function getPlayerCountText(id)
+    local n = getRoomNode(id)
+    return n and safeGet(n, {"Sign","PlayerCount","UI","Label","Text"}) or nil
+end
+
+local function getTimerText(id)
+    local n = getRoomNode(id)
+    return n and safeGet(n, {"Sign","Time","UI","Label","Text"}) or nil
+end
+
+local function parseCount(text)
+    if not text then return nil end
+    return tonumber(text:match("^(%d+)/"))
+end
+
+-- ============================================================
+--  ROOM STATUS
+-- ============================================================
+local function getRoomStatus(id)
+    local count = parseCount(getPlayerCountText(id))
+    if count == nil then return "unknown" end
+    if count >= 4   then return "full"    end
+    local timer = getTimerText(id)
+    local timerEmpty = (timer == nil or timer == "" or timer == " ")
+    if count == 0 and timerEmpty then return "empty" end
+    return "waiting"
+end
+
+-- ============================================================
+--  TOP SHIFT CHECK
+-- ============================================================
+local function checkTopShift()
+    if not CONFIG.CHECK_TOP_SHIFT then return true end
+    local char = LocalPlayer.Character
+    if not char then return true end
+    local label = safeGet(char, {"Head","PName","UI","shifts"})
+    if not label then return true end
+    local content = label.ContentText or label.Text or ""
+    local num = tonumber(content:match("%d+"))
+    if not num then return true end
+    return num >= CONFIG.TOP_SHIFT_MIN
+end
+
+-- ============================================================
+--  ROOM PICKER
+-- ============================================================
+local function pickRoom()
+    local candidates = {}
+    for _, room in ipairs(ROOMS) do
+        local status = getRoomStatus(room.id)
+        if status == "empty" then
+            table.insert(candidates, room)
+        elseif CONFIG.JOIN_EXISTING and status == "waiting" then
+            -- Hanya join kalau count masih di bawah target
+            local count = parseCount(getPlayerCountText(room.id))
+            if count and count < CONFIG.TARGET_PLAYERS then
+                table.insert(candidates, room)
+            end
+        end
+    end
+    if #candidates == 0 then return nil end
+    if CONFIG.RANDOM_ROOM then
+        return candidates[math.random(1, #candidates)]
+    end
+    return candidates[1]
+end
+
+-- ============================================================
+--  TELEPORT
+-- ============================================================
+local function teleportToRoom(room)
+    local char = LocalPlayer.Character
+    if not char then return false end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+    hrp.CFrame = room.cframe
+    return true
+end
+
+-- ============================================================
+--  REMOTES
+-- ============================================================
+local function getPartyFrame()
+    local pg = LocalPlayer:FindFirstChild("PlayerGui")
+    if not pg then return nil end
+    return safeGet(pg, {"PartyRoom","Center","Frame"})
+end
+
+local function fireExit()
+    pcall(function() RS.Util.Net["RE/ExitRoom"]:FireServer() end)
+end
+
+local function fireStart()
+    pcall(function() RS.Util.Net["RE/Quickstart"]:FireServer() end)
+end
+
+local function fireSkipDialogue()
+    pcall(function()
+        RS.Util.Net["RE/SetDoctorDialogueSkipped"]:FireServer(true)
+    end)
+end
+
+-- ============================================================
+--  WAIT FOR PLAYERS
+-- ============================================================
+local function waitForTarget(roomId, target, timeout)
+    local elapsed = 0
+    while elapsed < timeout do
+        local count = parseCount(getPlayerCountText(roomId))
+        if count and count >= target then return true end
+        task.wait(CONFIG.LOOP_DELAY)
+        elapsed = elapsed + CONFIG.LOOP_DELAY
+    end
+    return false
+end
+
+-- ============================================================
+--  MAIN FLOW
+-- ============================================================
+local function runAutoRoom(log)
+    log("Scanning rooms...")
+
+    if CONFIG.CHECK_TOP_SHIFT then
+        if not checkTopShift() then
+            log("Top Shift < "..CONFIG.TOP_SHIFT_MIN.." — abort.")
+            return
+        end
+        log("Top Shift OK ✓")
+    end
+
+    local room = pickRoom()
+    if not room then
+        log("No empty room. Retrying...")
+        return
+    end
+    log("Room "..room.id.." — Teleporting...")
+
+    if not teleportToRoom(room) then
+        log("Teleport failed.")
+        return
+    end
+
+    -- Verify entry — cek jarak HRP ke tiap room, konfirmasi room terdekat
+    log("Verifying entry...")
+    local confirmedRoom = nil
+    local elapsed = 0
+
+    repeat
+        task.wait(0.5)
+        elapsed = elapsed + 0.5
+
+        local char = LocalPlayer.Character
+        local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+        if not hrp then continue end
+
+        local hrpPos   = hrp.Position
+        local closest  = nil
+        local closestDist = math.huge
+
+        for _, r in ipairs(ROOMS) do
+            local dist = (hrpPos - r.cframe.Position).Magnitude
+            if dist < closestDist then
+                closestDist = dist
+                closest = r
+            end
+        end
+
+        -- Konfirmasi: karakter dalam radius 15 unit dari room target
+        -- DAN room itu punya timer jalan (artinya kita terdaftar)
+        if closest and closestDist <= 15 then
+            local timer = getTimerText(closest.id)
+            local timerRunning = timer and timer ~= "" and timer ~= " "
+            if timerRunning then
+                confirmedRoom = closest
+            end
+        end
+
+        log("Nearest: Room "..(closest and closest.id or "?").." | dist="..string.format("%.1f", closestDist).." | timer="..(getTimerText(closest and closest.id or 1) or "none"))
+
+    until confirmedRoom ~= nil or elapsed >= 12
+
+    if not confirmedRoom then
+        log("Entry timeout. Retry...")
+        fireExit()
+        return
+    end
+
+    room = confirmedRoom
+    log("Entered Room "..room.id.." ✓")
+    task.wait(0.8)
+
+    -- Skip Dialogue
+-- Skip Dialogue — poll sampai Disable.Visible true (Leader tag dari server)
+    if CONFIG.SKIP_DOCTOR_DIALOGUE then
+        local checkmark = nil
+        local waited = 0
+        log("Waiting for Leader tag...")
+        repeat
+            task.wait(0.4)
+            waited = waited + 0.4
+            local frame = getPartyFrame()
+            if frame then
+                local disableBtn = frame:FindFirstChild("Disable")
+                if disableBtn and disableBtn.Visible == true then
+                    local img = disableBtn:FindFirstChild("Image")
+                    checkmark = img and img:FindFirstChild("Checkmark")
+                end
+            end
+        until checkmark ~= nil or waited >= 10
+
+        if checkmark then
+            pcall(function() checkmark.Visible = true end)
+            task.wait(0.1)
+        end
+
+        -- Jalur yang confirmed work dari debugger
+        pcall(function()
+            RS.Util.Net["RE/SetDoctorDialogueSkipped"]:FireServer(true)
+        end)
+        log("Skip Dialogue ✓")
+    end
+
+    -- Wait for target players dengan live status
+    if CONFIG.TARGET_PLAYERS > 1 then
+        local elapsed2 = 0
+        while elapsed2 < CONFIG.WAIT_TIMEOUT do
+            local count = parseCount(getPlayerCountText(room.id))
+            local timer = getTimerText(room.id) or "?s"
+            log("Room "..room.id.." | "..(count or "?").."/4 | "..timer.." left")
+            if count and count >= CONFIG.TARGET_PLAYERS then break end
+            task.wait(CONFIG.LOOP_DELAY)
+            elapsed2 = elapsed2 + CONFIG.LOOP_DELAY
+        end
+        local finalCount = parseCount(getPlayerCountText(room.id))
+        if not finalCount or finalCount < CONFIG.TARGET_PLAYERS then
+            log("Player wait timeout. Exiting...")
+            fireExit()
+            return
+        end
+        log("Players ready ✓")
+    end
+
+    -- Delay sebelum START (respect waktu tunggu)
+    if CONFIG.START_DELAY > 0 then
+        local remaining = CONFIG.START_DELAY
+        while remaining > 0 do
+            log("Starting in "..remaining.."s...")
+            task.wait(1)
+            remaining = remaining - 1
+        end
+    end
+
+    log("Firing START!")
+    fireStart()
+    log("Round started ✓")
+end
+
+-- ============================================================
+--  GUI
+-- ============================================================
+local function buildGUI()
+    local pg = LocalPlayer:WaitForChild("PlayerGui")
+
+    local existing = pg:FindFirstChild("AutoRoomGUI")
+    if existing then existing:Destroy() end
+
+    local ScreenGui       = Instance.new("ScreenGui")
+    ScreenGui.Name        = "AutoRoomGUI"
+    ScreenGui.ResetOnSpawn = false
+    ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    ScreenGui.IgnoreGuiInset = true
+    ScreenGui.Parent      = pg
+
+    -- ToggleBtn pojok kanan bawah
+    local ToggleBtn             = Instance.new("TextButton")
+    ToggleBtn.Name              = "ToggleBtn"
+    ToggleBtn.Size              = UDim2.new(0, 30, 0, 30)
+    ToggleBtn.Position          = UDim2.new(1, -38, 1, -38)
+    ToggleBtn.AnchorPoint       = Vector2.new(1, 1)
+    ToggleBtn.BackgroundColor3  = Color3.fromRGB(15, 15, 25)
+    ToggleBtn.BorderSizePixel   = 0
+    ToggleBtn.Text              = "−"
+    ToggleBtn.TextColor3        = Color3.fromRGB(100, 220, 255)
+    ToggleBtn.TextSize          = 20
+    ToggleBtn.Font              = Enum.Font.GothamBold
+    ToggleBtn.ZIndex            = 20
+    ToggleBtn.Parent            = ScreenGui
+    Instance.new("UICorner", ToggleBtn).CornerRadius = UDim.new(0, 6)
+    do
+        local s = Instance.new("UIStroke", ToggleBtn)
+        s.Color = Color3.fromRGB(0, 180, 255)
+        s.Thickness = 1
+    end
+
+    -- Panel utama
+    local Panel                 = Instance.new("Frame")
+    Panel.Name                  = "Panel"
+    Panel.Size                  = UDim2.new(0, 285, 0, 345)
+    Panel.Position              = UDim2.new(0, 700, 0, 200) -- default kanan
+    Panel.AnchorPoint           = Vector2.new(0, 0)
+    Panel.BackgroundColor3      = Color3.fromRGB(10, 10, 20)
+    Panel.BorderSizePixel       = 0
+    Panel.ClipsDescendants      = false
+    Panel.ZIndex                = 5
+    Panel.Visible               = true
+    Panel.Parent                = ScreenGui
+    Instance.new("UICorner", Panel).CornerRadius = UDim.new(0, 10)
+    do
+        local s = Instance.new("UIStroke", Panel)
+        s.Color = Color3.fromRGB(0, 160, 255)
+        s.Thickness = 1.2
+        s.Transparency = 0.3
+    end
+
+    -- Header bar
+    local Header                = Instance.new("Frame")
+    Header.Name                 = "Header"
+    Header.Size                 = UDim2.new(1, 0, 0, 36)
+    Header.Position             = UDim2.new(0, 0, 0, 0)
+    Header.BackgroundColor3     = Color3.fromRGB(0, 110, 195)
+    Header.BorderSizePixel      = 0
+    Header.ZIndex               = 6
+    Header.Parent               = Panel
+    Instance.new("UICorner", Header).CornerRadius = UDim.new(0, 10)
+
+    local HeaderLabel           = Instance.new("TextLabel")
+    HeaderLabel.Size            = UDim2.new(1, -36, 1, 0)
+    HeaderLabel.Position        = UDim2.new(0, 10, 0, 0)
+    HeaderLabel.BackgroundTransparency = 1
+    HeaderLabel.Text            = "⚡ AUTO-ROOM"
+    HeaderLabel.TextColor3      = Color3.fromRGB(255, 255, 255)
+    HeaderLabel.TextSize        = 14
+    HeaderLabel.Font            = Enum.Font.GothamBold
+    HeaderLabel.TextXAlignment  = Enum.TextXAlignment.Left
+    HeaderLabel.ZIndex          = 7
+    HeaderLabel.Parent          = Header
+
+    local CloseBtn              = Instance.new("TextButton")
+    CloseBtn.Size               = UDim2.new(0, 26, 0, 26)
+    CloseBtn.Position           = UDim2.new(1, -30, 0, 5)
+    CloseBtn.BackgroundTransparency = 1
+    CloseBtn.Text               = "X"
+    CloseBtn.TextColor3         = Color3.fromRGB(255, 80, 80)
+    CloseBtn.TextSize           = 15
+    CloseBtn.Font               = Enum.Font.GothamBold
+    CloseBtn.ZIndex             = 8
+    CloseBtn.Parent             = Header
+
+    -- Label helper
+    local function makeLabel(posY, txt, color)
+        local l                 = Instance.new("TextLabel")
+        l.Size                  = UDim2.new(1, -16, 0, 20)
+        l.Position              = UDim2.new(0, 8, 0, posY)
+        l.BackgroundTransparency = 1
+        l.Text                  = txt
+        l.TextColor3            = color or Color3.fromRGB(200, 200, 220)
+        l.TextSize              = 12
+        l.Font                  = Enum.Font.Gotham
+        l.TextXAlignment        = Enum.TextXAlignment.Left
+        l.ZIndex                = 6
+        l.Parent                = Panel
+        return l
+    end
+
+    local y = 44
+    makeLabel(y, "TARGET PLAYERS: "..CONFIG.TARGET_PLAYERS, Color3.fromRGB(100,255,180)); y+=22
+    makeLabel(y, "SKIP DIALOGUE: "..(CONFIG.SKIP_DOCTOR_DIALOGUE and "ON" or "OFF"),
+        CONFIG.SKIP_DOCTOR_DIALOGUE and Color3.fromRGB(100,220,100) or Color3.fromRGB(220,80,80)); y+=22
+    makeLabel(y, "CHECK SHIFT: "..(CONFIG.CHECK_TOP_SHIFT and "ON (min "..CONFIG.TOP_SHIFT_MIN..")" or "OFF"),
+        CONFIG.CHECK_TOP_SHIFT and Color3.fromRGB(100,220,100) or Color3.fromRGB(220,80,80)); y+=22
+    makeLabel(y, "RANDOM ROOM: "..(CONFIG.RANDOM_ROOM and "ON" or "SEQUENTIAL"),
+        CONFIG.RANDOM_ROOM and Color3.fromRGB(255,220,80) or Color3.fromRGB(180,180,220)); y+=28
+
+    local div               = Instance.new("Frame")
+    div.Size                = UDim2.new(1, -16, 0, 1)
+    div.Position            = UDim2.new(0, 8, 0, y)
+    div.BackgroundColor3    = Color3.fromRGB(0, 160, 255)
+    div.BackgroundTransparency = 0.5
+    div.BorderSizePixel     = 0
+    div.ZIndex              = 6
+    div.Parent              = Panel
+    y += 8
+
+    local StatusLabel       = makeLabel(y, "Status: Idle", Color3.fromRGB(160,160,200))
+    StatusLabel.Size        = UDim2.new(1, -16, 0, 40)
+    StatusLabel.TextWrapped = true
+    y += 48
+
+    local RoomScanLabel     = makeLabel(y, "Rooms: scanning...", Color3.fromRGB(140,210,255))
+    RoomScanLabel.Size      = UDim2.new(1, -16, 0, 50)
+    RoomScanLabel.TextWrapped = true
+    y += 56
+
+    local StartBtn              = Instance.new("TextButton")
+    StartBtn.Size               = UDim2.new(1, -16, 0, 34)
+    StartBtn.Position           = UDim2.new(0, 8, 0, y)
+    StartBtn.BackgroundColor3   = Color3.fromRGB(0, 180, 80)
+    StartBtn.BorderSizePixel    = 0
+    StartBtn.Text               = "▶ START"
+    StartBtn.TextColor3         = Color3.fromRGB(255, 255, 255)
+    StartBtn.TextSize           = 13
+    StartBtn.Font               = Enum.Font.GothamBold
+    StartBtn.ZIndex             = 7
+    StartBtn.Parent             = Panel
+    Instance.new("UICorner", StartBtn).CornerRadius = UDim.new(0, 8)
+
+    -- ============================================================
+    --  DRAG — seluruh Panel bisa di-drag
+    -- ============================================================
+    local dragging, dragStart, dragOrigin = false, nil, nil
+
+    Panel.Active = true
+
+    Panel.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            dragging   = true
+            dragStart  = input.Position
+            dragOrigin = Panel.AbsolutePosition
+        end
+    end)
+
+    Panel.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+        if not dragging then return end
+        if input.UserInputType ~= Enum.UserInputType.MouseMovement
+        and input.UserInputType ~= Enum.UserInputType.Touch then return end
+
+        local delta = input.Position - dragStart
+        local vp    = Workspace.CurrentCamera.ViewportSize
+        local sz    = Panel.AbsoluteSize
+        local nx    = math.clamp(dragOrigin.X + delta.X, 0, vp.X - sz.X)
+        local ny    = math.clamp(dragOrigin.Y + delta.Y, 0, vp.Y - sz.Y)
+        Panel.Position = UDim2.new(0, nx, 0, ny)
+    end)
+
+    -- ============================================================
+    --  TOGGLE & CLOSE
+    -- ============================================================
+    local panelOpen = not CONFIG.START_MINIMIZED
+    Panel.Visible = panelOpen
+    ToggleBtn.Text = panelOpen and "−" or "+"
+
+    ToggleBtn.MouseButton1Click:Connect(function()
+        panelOpen = not panelOpen
+        Panel.Visible = panelOpen
+        ToggleBtn.Text = panelOpen and "−" or "+"
+    end)
+
+    CloseBtn.MouseButton1Click:Connect(function()
+        _G.AutoRoomRunning = false
+        _G.AutoRoomActive  = false
+        ScreenGui:Destroy()
+    end)
+
+    -- ============================================================
+    --  ROOM SCAN DISPLAY
+    -- ============================================================
+    local function updateRoomScan()
+        local parts = {}
+        for _, r in ipairs(ROOMS) do
+            local s     = getRoomStatus(r.id)
+            local count = getPlayerCountText(r.id) or "?/4"
+            local icon  = s == "empty" and "🔵" or (s == "waiting" and "🟡" or (s == "full" and "🔴" or "⚪"))
+            table.insert(parts, "R"..r.id..": "..icon.." "..count)
+        end
+        RoomScanLabel.Text = table.concat(parts, "  |  ")
+    end
+
+    -- ============================================================
+    --  START / STOP
+    -- ============================================================
+    _G.AutoRoomActive = false
+    local loopThread
+
+    local function setStatus(txt)
+        StatusLabel.Text = "Status: "..txt
+    end
+
+    StartBtn.MouseButton1Click:Connect(function()
+        if _G.AutoRoomActive then
+            _G.AutoRoomActive = false
+            if loopThread then task.cancel(loopThread) end
+            StartBtn.BackgroundColor3 = Color3.fromRGB(0, 180, 80)
+            StartBtn.Text = "▶ START"
+            setStatus("Stopped.")
+        else
+            _G.AutoRoomActive = true
+            StartBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+            StartBtn.Text = "■ STOP"
+            setStatus("Running...")
+
+            loopThread = task.spawn(function()
+                while _G.AutoRoomActive and _G.AutoRoomRunning do
+                    pcall(updateRoomScan)
+                    runAutoRoom(function(msg)
+                        setStatus(msg)
+                        task.wait(0.05)
+                    end)
+                    task.wait(CONFIG.LOOP_DELAY)
+                end
+                setStatus("Idle.")
+                StartBtn.BackgroundColor3 = Color3.fromRGB(0, 180, 80)
+                StartBtn.Text = "▶ START"
+            end)
+        end
+    end)
+
+    task.spawn(function()
+        while _G.AutoRoomRunning do
+            pcall(updateRoomScan)
+            task.wait(2)
+        end
+    end)
+
+    -- AUTO START
+    if CONFIG.AUTO_START then
+        task.wait(0.3)
+        _G.AutoRoomActive = true
+        StartBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+        StartBtn.Text = "■ STOP"
+        setStatus("Auto-started...")
+
+        loopThread = task.spawn(function()
+            while _G.AutoRoomActive and _G.AutoRoomRunning do
+                pcall(updateRoomScan)
+                runAutoRoom(function(msg)
+                    setStatus(msg)
+                    task.wait(0.05)
+                end)
+                task.wait(CONFIG.LOOP_DELAY)
+            end
+            setStatus("Idle.")
+            StartBtn.BackgroundColor3 = Color3.fromRGB(0, 180, 80)
+            StartBtn.Text = "▶ START"
+        end)
+    end
+end
+
+-- ============================================================
+--  BOOT
+-- ============================================================
+buildGUI()
+print("[AutoRoom] v2.0 loaded, boss man.")
