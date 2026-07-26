@@ -24,7 +24,7 @@ local CONFIG = {
     AUTO_START           = true, -- true = auto langsung jalan saat script dieksekusi atau false = script diam dulu, tekan START manual
     START_MINIMIZED      = false, -- true = panel langsung terminimize saat script dieksekusi atau  false = panel langsung terbuka
     START_DELAY          = 5, -- Jeda (detik) setelah checkmark / setelah player terpenuhi sebelum tekan START
-    JOIN_EXISTING        = false,    -- true = boleh join room yang sudah ada pemain (waiting) asal count < TARGET_PLAYERS atau false = hanya join room yang benar-benar kosong (0/4)
+    JOIN_EXISTING        = true,    -- true = boleh join room yang sudah ada pemain (waiting) asal count < TARGET_PLAYERS atau false = hanya join room yang benar-benar kosong (0/4)
 }
 
 -- ============================================================
