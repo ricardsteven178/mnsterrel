@@ -1,6 +1,6 @@
 task.wait(5)
 -- ==========================================
--- AUTO DOCTOR: COMBINED EDITION (Medical R1-5 + Emergency R6/R7/R8) batas perlu uji coba update buang obat fix + update masalah npx keluar script masih tp + rapi config
+-- AUTO DOCTOR: COMBINED EDITION (Medical R1-5 + Emergency R6/R7/R8) batas perlu uji coba update buang obat fix + update masalah npx keluar script masih tp + rapi config hapus
 -- Landasan: Script 1 | Emergency ext: Script 2, 3, 4
 -- ==========================================
 
