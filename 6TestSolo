@@ -63,7 +63,7 @@ local scriptsByPlaceId = {
         --"https://cdn.jsdelivr.net/gh/ricardsteven178/mnsterrel@main/DoctersV4",
         --"https://cdn.jsdelivr.net/gh/ricardsteven178/mnsterrel@main/NoGameDead",
         "https://cdn.jsdelivr.net/gh/ricardsteven178/mnsterrel@main/BeliV2",
-        "https://cdn.jsdelivr.net/gh/ricardsteven178/mnsterrel@main/AntiAFK",
+        --"https://cdn.jsdelivr.net/gh/ricardsteven178/mnsterrel@main/AntiAFK",
         "https://cdn.jsdelivr.net/gh/ricardsteven178/mnsterrel@main/0"--print
     },
     [LOBBY_PLACE_ID] = {
