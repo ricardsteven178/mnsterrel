@@ -1,5 +1,5 @@
 task.wait(1)
-print("Memulai pengecekan sistem NEW...")
+print("Memulai pengecekan sistem NEW jersey...")
 
 local function executeScripts(scripts)
     if not scripts or #scripts == 0 then return end
