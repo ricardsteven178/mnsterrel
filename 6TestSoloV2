@@ -53,12 +53,13 @@ local LOBBY_PLACE_ID = 78515283254292
 -- Membuat tabel yang memetakan Place ID ke list script masing-masing
 local scriptsByPlaceId = {
     [INGAME_PLACE_ID] = {
-        --"https://cdn.jsdelivr.net/gh/ricardsteven178/mnster@main/casirV13",
-        "https://cdn.jsdelivr.net/gh/ricardsteven178/mnster@main/adesaV10",
+        "https://cdn.jsdelivr.net/gh/ricardsteven178/mnster@main/casirV13",
+        --"https://cdn.jsdelivr.net/gh/ricardsteven178/mnster@main/adesaV10",
+        "https://cdn.jsdelivr.net/gh/ricardsteven178/mnster@main/adesaV11",
         "https://cdn.jsdelivr.net/gh/ricardsteven178/mnsterrel@main/LowGrapV2",
         "https://cdn.jsdelivr.net/gh/ricardsteven178/mnsterrel@main/EspV3",
         "https://cdn.jsdelivr.net/gh/ricardsteven178/mnsterrel@main/KopihV1",
-        "https://cdn.jsdelivr.net/gh/ricardsteven178/mnsterrel@main/KasirV8",
+        --"https://cdn.jsdelivr.net/gh/ricardsteven178/mnsterrel@main/KasirV8",
         "https://cdn.jsdelivr.net/gh/ricardsteven178/mnsterrel@main/PelengkapV3",
         --"https://cdn.jsdelivr.net/gh/ricardsteven178/mnsterrel@main/DoctersV4",
         --"https://cdn.jsdelivr.net/gh/ricardsteven178/mnsterrel@main/NoGameDead",
